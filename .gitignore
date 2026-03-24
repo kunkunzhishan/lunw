@@ -5,6 +5,8 @@
 node_modules/
 .venv/
 .venv-mineru/
+__pycache__/
+*.pyc
 storage/
 *.log
 npm-debug.log*
