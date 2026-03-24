@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --research-bg: #f8f9fa;
+    --research-sidebar: #ffffff;
+    --research-accent: #0d9488;
+    --research-border: #e9ecef;
+  }
+
+  body {
+    @apply antialiased text-slate-800 bg-[#f8f9fa] font-sans;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight text-slate-900;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center px-4 py-2 bg-teal-600 text-white rounded-lg font-medium transition-all hover:bg-teal-700 active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  
+  .btn-secondary {
+    @apply inline-flex items-center justify-center px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg font-medium transition-all hover:bg-slate-50 active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center px-3 py-1.5 text-slate-600 rounded-md hover:bg-slate-100 transition-colors;
+  }
+
+  .research-card {
+    @apply bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden;
+  }
+
+  .paper-text {
+    @apply font-serif leading-relaxed text-lg text-slate-800;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

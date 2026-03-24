@@ -1,0 +1,303 @@
+"use client";
+
+import React from "react";
+import {
+  MessageSquare,
+  Sparkles,
+  BookOpen,
+  StickyNote,
+  Send,
+  ArrowUpRight,
+  ExternalLink,
+  ChevronRight,
+} from "lucide-react";
+
+import type { ChatMessage, ExportedNote, PaperSummary, RecommendationItem, RecommendationResponse } from "@/lib/types";
+
+export type RightPanelTab = "chat" | "related" | "notes";
+
+export const RightPanel = ({
+  activeScope,
+  activeTab,
+  busy,
+  chatInput,
+  messages,
+  note,
+  onChangeScope,
+  onChatInputChange,
+  onSubmitChat,
+  onTabChange,
+  recommendationData,
+  recommendations,
+  summary,
+}: {
+  activeScope: "current" | "history" | "direction";
+  activeTab: RightPanelTab;
+  busy: boolean;
+  chatInput: string;
+  messages: ChatMessage[];
+  note?: ExportedNote;
+  onChangeScope: (scope: "current" | "history" | "direction") => void;
+  onChatInputChange: (value: string) => void;
+  onSubmitChat: () => void;
+  onTabChange: (tab: RightPanelTab) => void;
+  recommendationData: RecommendationResponse | null;
+  recommendations: RecommendationItem[];
+  summary?: PaperSummary;
+}) => {
+
+  return (
+    <div className="w-96 border-l border-slate-200 bg-white flex flex-col shrink-0">
+      {/* Tabs */}
+      <div className="flex border-b border-slate-100 p-2 gap-1 bg-slate-50/50">
+        <TabButton 
+          active={activeTab === 'chat'} 
+          onClick={() => onTabChange('chat')} 
+          icon={<MessageSquare size={16} />} 
+          label="AI 问答" 
+        />
+        <TabButton 
+          active={activeTab === 'related'} 
+          onClick={() => onTabChange('related')} 
+          icon={<BookOpen size={16} />} 
+          label="相关推荐" 
+        />
+        <TabButton 
+          active={activeTab === 'notes'} 
+          onClick={() => onTabChange('notes')} 
+          icon={<StickyNote size={16} />} 
+          label="笔记预览" 
+        />
+      </div>
+
+      {/* Content Area */}
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === "chat" && (
+          <ChatTab
+            busy={busy}
+            chatInput={chatInput}
+            messages={messages}
+            onChatInputChange={onChatInputChange}
+            onSubmitChat={onSubmitChat}
+          />
+        )}
+        {activeTab === "related" && (
+          <RelatedTab
+            activeScope={activeScope}
+            recommendationData={recommendationData}
+            onChangeScope={onChangeScope}
+            recommendations={recommendations}
+          />
+        )}
+        {activeTab === "notes" && <NotesTab note={note} summary={summary} />}
+      </div>
+    </div>
+  );
+};
+
+const TabButton = ({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) => (
+  <button 
+    onClick={onClick}
+    className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all ${
+      active ? 'bg-white text-teal-700 shadow-sm border border-slate-200' : 'text-slate-500 hover:bg-slate-200/50'
+    }`}
+  >
+    {icon}
+    <span>{label}</span>
+  </button>
+);
+
+const ChatTab = ({
+  busy,
+  chatInput,
+  messages,
+  onChatInputChange,
+  onSubmitChat,
+}: {
+  busy: boolean;
+  chatInput: string;
+  messages: ChatMessage[];
+  onChatInputChange: (value: string) => void;
+  onSubmitChat: () => void;
+}) => (
+  <div className="h-full flex flex-col p-4">
+    <div className="flex-1 space-y-4">
+      {messages.length === 0 ? (
+        <div className="bg-slate-100 p-4 rounded-2xl rounded-tl-none text-sm text-slate-700 max-w-[95%] space-y-2">
+          <div className="flex items-center gap-1.5 text-teal-600 font-bold mb-1">
+            <Sparkles size={14} />
+            <span>助手待命</span>
+          </div>
+          <p>你可以直接问：这篇论文解决什么问题、方法核心是什么、某一段该怎么理解，或者让助手联网补充背景。</p>
+        </div>
+      ) : null}
+
+      {messages.map((message) => (
+        <div
+          className={`max-w-[95%] rounded-2xl p-4 text-sm ${
+            message.role === "user"
+              ? "ml-auto rounded-tr-none bg-teal-600 text-white"
+              : "rounded-tl-none bg-slate-100 text-slate-700"
+          }`}
+          key={message.id}
+        >
+          <div className="whitespace-pre-wrap">{message.content}</div>
+          {message.sourceRefs.length ? (
+            <div className="mt-3 space-y-1 border-t border-slate-200/60 pt-3 text-xs text-slate-500">
+              {message.sourceRefs.map((ref, index) => (
+                <div key={`${message.id}-${index}`}>
+                  {ref.type === "paper" ? "论文" : ref.type === "academic" ? "学术检索" : ref.type === "web" ? "网页" : "推断"} · {ref.label}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+      {busy ? (
+        <div className="bg-slate-100 p-3 rounded-2xl rounded-tl-none text-sm text-slate-500 max-w-[85%]">
+          正在思考并整理引用来源...
+        </div>
+      ) : null}
+    </div>
+    
+    <div className="mt-4 relative">
+      <textarea 
+        placeholder="询问关于论文的任何问题..." 
+        className="w-full p-4 pr-12 bg-slate-100 border-none rounded-2xl text-sm resize-none h-24 focus:ring-2 focus:ring-teal-500/20 outline-none"
+        value={chatInput}
+        onChange={(event) => onChatInputChange(event.target.value)}
+      />
+      <button
+        className="absolute right-3 bottom-3 p-2 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors disabled:opacity-60"
+        disabled={busy || !chatInput.trim()}
+        onClick={onSubmitChat}
+      >
+        <Send size={16} />
+      </button>
+    </div>
+  </div>
+);
+
+const RelatedTab = ({
+  activeScope,
+  recommendationData,
+  onChangeScope,
+  recommendations,
+}: {
+  activeScope: "current" | "history" | "direction";
+  recommendationData: RecommendationResponse | null;
+  onChangeScope: (scope: "current" | "history" | "direction") => void;
+  recommendations: RecommendationItem[];
+}) => (
+  <div className="p-4 space-y-4">
+    <div className="flex gap-2">
+      {[
+        { id: "current", label: "当前论文" },
+        { id: "history", label: "阅读历史" },
+        { id: "direction", label: "研究方向" },
+      ].map((item) => (
+        <button
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            activeScope === item.id ? "bg-teal-600 text-white" : "bg-slate-100 text-slate-600"
+          }`}
+          key={item.id}
+          onClick={() => onChangeScope(item.id as "current" | "history" | "direction")}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+    {recommendationData ? (
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 space-y-2">
+        <div className="font-semibold text-slate-800">本次检索计划</div>
+        <div>{recommendationData.plan.intent}</div>
+        <div>Seed: {recommendationData.plan.seedQueries.join(" · ")}</div>
+        <div>Sources: {recommendationData.sourcesUsed.join(", ")}</div>
+        {recommendationData.errors?.length ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
+            检索警告：{recommendationData.errors.join("；")}
+          </div>
+        ) : null}
+      </div>
+    ) : null}
+    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">推荐结果</h4>
+    {recommendations.length === 0 ? (
+      <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">
+        还没有推荐结果。点击上面的来源标签，或先上传并选择一篇论文。
+      </div>
+    ) : null}
+    {recommendations.map((paper) => (
+      <a
+        href={paper.url}
+        key={paper.id}
+        rel="noreferrer"
+        target="_blank"
+        className="block rounded-xl border border-slate-100 p-3 transition-colors hover:bg-slate-50 group"
+      >
+        <div className="mb-1 flex items-start justify-between">
+          <h5 className="line-clamp-2 text-sm font-semibold leading-tight text-slate-800 transition-colors group-hover:text-teal-700">
+            {paper.title}
+          </h5>
+          <ArrowUpRight size={14} className="mt-0.5 shrink-0 text-slate-300 group-hover:text-teal-500" />
+        </div>
+        <p className="mb-2 text-[11px] text-slate-500">
+          {paper.sourceType === "current" ? "基于当前论文" : paper.sourceType === "history" ? "基于阅读历史" : "基于研究方向"} · {paper.source}
+        </p>
+        <p className="text-xs leading-relaxed text-slate-600">{paper.reason}</p>
+        <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+          {paper.year ? <div>年份：{paper.year}</div> : null}
+          {paper.authors.length ? <div>作者：{paper.authors.slice(0, 3).join(", ")}</div> : null}
+          <div>证据：{paper.evidenceRefs.join("；")}</div>
+          <div>建议：{paper.nextStep}</div>
+        </div>
+      </a>
+    ))}
+    <button className="w-full py-2 text-sm font-medium text-slate-500 hover:text-slate-700 flex items-center justify-center gap-1 border border-dashed border-slate-200 rounded-xl">
+      <span>查看更多研究方向</span>
+      <ChevronRight size={14} />
+    </button>
+  </div>
+);
+
+const NotesTab = ({ note, summary }: { note?: ExportedNote; summary?: PaperSummary }) => (
+  <div className="p-4 flex flex-col h-full">
+    <div className="flex items-center justify-between mb-4 px-1">
+      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Obsidian 风格笔记</h4>
+      {note?.targetPath ? <span className="text-[10px] text-slate-400">{note.targetPath}</span> : null}
+    </div>
+    
+    <div className="flex-1 bg-slate-50 rounded-2xl p-4 font-mono text-[13px] leading-relaxed text-slate-700 border border-slate-100 overflow-y-auto whitespace-pre-wrap">
+      {note?.markdown ?? summaryPreview(summary)}
+    </div>
+    
+    <button className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-900 text-white rounded-xl font-medium hover:bg-black transition-all">
+      <ExternalLink size={16} />
+      <span>{note ? "已导出，可在目标目录查看" : "点击顶部“导出笔记”写入 Obsidian 目录"}</span>
+    </button>
+  </div>
+);
+
+function summaryPreview(summary?: PaperSummary) {
+  if (!summary) {
+    return "还没有笔记内容。先点击顶部“生成摘要”或“导出笔记”。";
+  }
+
+  return `# 摘要预览
+
+一句话总结：${summary.oneLiner}
+
+研究问题：
+${summary.researchProblem}
+
+核心方法：
+${summary.coreMethod}
+
+创新点：
+${summary.innovations.map((item) => `- ${item}`).join("\n")}
+
+局限性：
+${summary.limitations.map((item) => `- ${item}`).join("\n")}
+
+延伸想法：
+${summary.ideas.map((item) => `- ${item}`).join("\n")}`;
+}
