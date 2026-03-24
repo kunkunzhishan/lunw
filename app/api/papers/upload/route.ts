@@ -3,9 +3,10 @@ import path from "path";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 
+import { normalizeMineruMode, type MineruMode } from "@/lib/config";
 import { extractPdfText } from "@/lib/pdf";
 import { inferTitle } from "@/lib/paper-utils";
-import { savePaper, writeUploadedPdf } from "@/lib/storage";
+import { DEFAULT_REPOSITORY_ID, savePaper, writeUploadedPdf } from "@/lib/storage";
 import type { PaperRecord } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -28,14 +29,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "目前只支持 PDF 文件。" }, { status: 400 });
   }
 
+  const mineruModeRaw = formData.get("mineruMode");
+  let mineruMode: MineruMode | undefined;
+  if (typeof mineruModeRaw === "string" && mineruModeRaw.trim()) {
+    const normalized = mineruModeRaw.trim().toLowerCase();
+    if (normalized !== "api" && normalized !== "local") {
+      return NextResponse.json({ error: "mineruMode 仅支持 api 或 local。" }, { status: 400 });
+    }
+    mineruMode = normalizeMineruMode(normalized);
+  }
+
   const id = nanoid();
   const createdAt = new Date().toISOString();
+  const repositoryIdRaw = formData.get("repositoryId");
+  const repositoryId = typeof repositoryIdRaw === "string" && repositoryIdRaw.trim()
+    ? repositoryIdRaw.trim()
+    : DEFAULT_REPOSITORY_ID;
   const safeName = `${id}${path.extname(file.name) || ".pdf"}`;
   const uploadPath = await writeUploadedPdf(safeName, new Uint8Array(await file.arrayBuffer()));
   let stage = "extract";
 
   try {
-    const extracted = await extractPdfText(uploadPath, id);
+    const extracted = await extractPdfText(uploadPath, id, { mode: mineruMode });
     stage = "title";
     const title = inferTitle(extracted.title || extracted.text, file.name.replace(/\.pdf$/i, ""));
     stage = "blocks";
@@ -49,6 +64,7 @@ export async function POST(request: Request) {
       title,
       authors: [],
       source: "upload",
+      repositoryId,
       uploadPath,
       status: "ready",
       createdAt,
@@ -56,6 +72,7 @@ export async function POST(request: Request) {
       text: extracted.text,
       blocks: extracted.blocks,
       assets: extracted.assets,
+      annotations: [],
       chatHistory: [],
       recommendations: [],
     };
@@ -68,6 +85,7 @@ export async function POST(request: Request) {
       title: file.name.replace(/\.pdf$/i, ""),
       authors: [],
       source: "upload",
+      repositoryId,
       uploadPath,
       status: "error",
       createdAt,
@@ -75,6 +93,7 @@ export async function POST(request: Request) {
       text: "",
       blocks: [],
       assets: [],
+      annotations: [],
       chatHistory: [],
       recommendations: [],
       parseError:

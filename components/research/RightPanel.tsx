@@ -10,44 +10,54 @@ import {
   ArrowUpRight,
   ExternalLink,
   ChevronRight,
+  X,
 } from "lucide-react";
 
-import type { ChatMessage, ExportedNote, PaperSummary, RecommendationItem, RecommendationResponse } from "@/lib/types";
+import type { ChatMessage, ExportedNote, RecommendationItem, RecommendationResponse } from "@/lib/types";
 
 export type RightPanelTab = "chat" | "related" | "notes";
+
+export interface ChatContextRef {
+  blockId: string;
+  label: string;
+}
 
 export const RightPanel = ({
   activeScope,
   activeTab,
   busy,
   chatInput,
+  chatContextRefs,
   messages,
   note,
   onChangeScope,
   onChatInputChange,
+  onClearChatContext,
+  onRemoveChatContext,
   onSubmitChat,
   onTabChange,
   recommendationData,
   recommendations,
-  summary,
 }: {
   activeScope: "current" | "history" | "direction";
   activeTab: RightPanelTab;
   busy: boolean;
   chatInput: string;
+  chatContextRefs: ChatContextRef[];
   messages: ChatMessage[];
   note?: ExportedNote;
   onChangeScope: (scope: "current" | "history" | "direction") => void;
   onChatInputChange: (value: string) => void;
+  onClearChatContext: () => void;
+  onRemoveChatContext: (blockId: string) => void;
   onSubmitChat: () => void;
   onTabChange: (tab: RightPanelTab) => void;
   recommendationData: RecommendationResponse | null;
   recommendations: RecommendationItem[];
-  summary?: PaperSummary;
 }) => {
 
   return (
-    <div className="w-96 border-l border-slate-200 bg-white flex flex-col shrink-0">
+    <div className="flex-1 w-full border-l border-slate-200 bg-white flex flex-col shrink-0 min-h-0">
       {/* Tabs */}
       <div className="flex border-b border-slate-100 p-2 gap-1 bg-slate-50/50">
         <TabButton 
@@ -76,8 +86,11 @@ export const RightPanel = ({
           <ChatTab
             busy={busy}
             chatInput={chatInput}
+            chatContextRefs={chatContextRefs}
             messages={messages}
             onChatInputChange={onChatInputChange}
+            onClearChatContext={onClearChatContext}
+            onRemoveChatContext={onRemoveChatContext}
             onSubmitChat={onSubmitChat}
           />
         )}
@@ -89,7 +102,7 @@ export const RightPanel = ({
             recommendations={recommendations}
           />
         )}
-        {activeTab === "notes" && <NotesTab note={note} summary={summary} />}
+        {activeTab === "notes" && <NotesTab note={note} />}
       </div>
     </div>
   );
@@ -110,14 +123,20 @@ const TabButton = ({ active, onClick, icon, label }: { active: boolean, onClick:
 const ChatTab = ({
   busy,
   chatInput,
+  chatContextRefs,
   messages,
   onChatInputChange,
+  onClearChatContext,
+  onRemoveChatContext,
   onSubmitChat,
 }: {
   busy: boolean;
   chatInput: string;
+  chatContextRefs: ChatContextRef[];
   messages: ChatMessage[];
   onChatInputChange: (value: string) => void;
+  onClearChatContext: () => void;
+  onRemoveChatContext: (blockId: string) => void;
   onSubmitChat: () => void;
 }) => (
   <div className="h-full flex flex-col p-4">
@@ -161,6 +180,27 @@ const ChatTab = ({
     </div>
     
     <div className="mt-4 relative">
+      {chatContextRefs.length ? (
+        <div className="mb-2 rounded-xl border border-teal-100 bg-teal-50/70 p-2">
+          <div className="mb-2 flex items-center justify-between text-xs text-teal-700">
+            <span>已引用上下文 ({chatContextRefs.length})</span>
+            <button type="button" className="hover:underline" onClick={onClearChatContext}>清空</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {chatContextRefs.map((item) => (
+              <button
+                type="button"
+                key={item.blockId}
+                className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-white px-2 py-0.5 text-[11px] text-teal-700"
+                onClick={() => onRemoveChatContext(item.blockId)}
+              >
+                <span className="max-w-[170px] truncate">{item.label}</span>
+                <X size={12} />
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <textarea 
         placeholder="询问关于论文的任何问题..." 
         className="w-full p-4 pr-12 bg-slate-100 border-none rounded-2xl text-sm resize-none h-24 focus:ring-2 focus:ring-teal-500/20 outline-none"
@@ -259,7 +299,7 @@ const RelatedTab = ({
   </div>
 );
 
-const NotesTab = ({ note, summary }: { note?: ExportedNote; summary?: PaperSummary }) => (
+const NotesTab = ({ note }: { note?: ExportedNote }) => (
   <div className="p-4 flex flex-col h-full">
     <div className="flex items-center justify-between mb-4 px-1">
       <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Obsidian 风格笔记</h4>
@@ -267,7 +307,7 @@ const NotesTab = ({ note, summary }: { note?: ExportedNote; summary?: PaperSumma
     </div>
     
     <div className="flex-1 bg-slate-50 rounded-2xl p-4 font-mono text-[13px] leading-relaxed text-slate-700 border border-slate-100 overflow-y-auto whitespace-pre-wrap">
-      {note?.markdown ?? summaryPreview(summary)}
+      {note?.markdown ?? "还没有导出笔记。点击顶部“导出笔记”后会显示完整 Markdown 内容。"}
     </div>
     
     <button className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-900 text-white rounded-xl font-medium hover:bg-black transition-all">
@@ -276,28 +316,3 @@ const NotesTab = ({ note, summary }: { note?: ExportedNote; summary?: PaperSumma
     </button>
   </div>
 );
-
-function summaryPreview(summary?: PaperSummary) {
-  if (!summary) {
-    return "还没有笔记内容。先点击顶部“生成摘要”或“导出笔记”。";
-  }
-
-  return `# 摘要预览
-
-一句话总结：${summary.oneLiner}
-
-研究问题：
-${summary.researchProblem}
-
-核心方法：
-${summary.coreMethod}
-
-创新点：
-${summary.innovations.map((item) => `- ${item}`).join("\n")}
-
-局限性：
-${summary.limitations.map((item) => `- ${item}`).join("\n")}
-
-延伸想法：
-${summary.ideas.map((item) => `- ${item}`).join("\n")}`;
-}

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { FileText, Languages, Lightbulb, FileDown, Search, PanelRightOpen } from "lucide-react";
+import { FileText, Lightbulb, FileDown, Search, PanelRightOpen } from "lucide-react";
 
 export const TopBar = ({
   activePaperTitle,
@@ -9,7 +9,6 @@ export const TopBar = ({
   onOpenAssistant,
   onSearchChange,
   onSummarize,
-  onTranslate,
   onExport,
   searchQuery,
 }: {
@@ -18,7 +17,6 @@ export const TopBar = ({
   onOpenAssistant: () => void;
   onSearchChange: (value: string) => void;
   onSummarize: () => void;
-  onTranslate: () => void;
   onExport: () => void;
   searchQuery: string;
 }) => {
@@ -29,7 +27,7 @@ export const TopBar = ({
           <div className="truncate text-sm font-semibold text-slate-800">
             {activePaperTitle ?? "论文阅读"}
           </div>
-          <div className="text-xs text-slate-500">英文段落下面紧跟中文翻译，上下滚动阅读。</div>
+          <div className="text-xs text-slate-500">连续阅读论文正文，并将关键段落引用到聊天上下文。</div>
         </div>
         <div className="relative w-80 max-w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -44,7 +42,6 @@ export const TopBar = ({
       </div>
 
       <div className="flex items-center gap-2">
-        <ActionButton disabled={busy} icon={<Languages size={18} />} label="对照翻译" onClick={onTranslate} />
         <ActionButton disabled={busy} icon={<FileText size={18} />} label="生成摘要" onClick={onSummarize} />
         <ActionButton disabled={busy} icon={<Lightbulb size={18} />} label="助手" onClick={onOpenAssistant} />
         <ActionButton disabled={busy} icon={<FileDown size={18} />} label="导出笔记" highlight onClick={onExport} />

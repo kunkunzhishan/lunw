@@ -10,6 +10,7 @@ export async function GET() {
       id: paper.id,
       title: paper.title,
       authors: paper.authors,
+      repositoryId: paper.repositoryId,
       status: paper.status,
       createdAt: paper.createdAt,
       updatedAt: paper.updatedAt,

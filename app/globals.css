@@ -40,6 +40,52 @@
     @apply font-serif leading-relaxed text-lg text-slate-800;
   }
 
+  .paper-reading-english {
+    font-family: "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", "STSong", "Times New Roman", serif;
+    text-wrap: pretty;
+    letter-spacing: 0.01em;
+  }
+
+  .paper-reading-chinese {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    text-wrap: pretty;
+  }
+
+  .formula-readable .katex-display {
+    margin: 0;
+  }
+
+  .formula-readable .katex {
+    font-size: 1.12em;
+    color: #0f172a;
+  }
+
+  .inline-math {
+    display: inline-flex;
+    align-items: baseline;
+    margin: 0 0.14em;
+    padding: 0.08em 0.32em;
+    border-radius: 0.45em;
+    border: 1px solid #dbe4ee;
+    background: #f7fafc;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    vertical-align: baseline;
+  }
+
+  .inline-math .katex {
+    font-size: 1.03em;
+    color: #0f172a;
+  }
+
+  .inline-math-display {
+    display: block;
+    margin: 0.5rem 0;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid #dbe4ee;
+    border-radius: 0.8rem;
+    background: #f8fbff;
+  }
+
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }

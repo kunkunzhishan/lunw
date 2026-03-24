@@ -78,6 +78,11 @@ export function buildMarkdownNote(paper: PaperRecord) {
   const summary = paper.summary;
   const recommendations = paper.recommendations.slice(0, 5);
   const chats = paper.chatHistory.slice(-4);
+  const annotations = paper.annotations.slice(0, 20);
+  const textHighlights = paper.blocks
+    .filter((block): block is TextPaperBlock => block.type === "text" || block.type === "heading")
+    .slice(0, 12)
+    .map((block) => `- [P${block.page}] ${block.english.slice(0, 220)}`);
 
   return `# ${paper.title}
 
@@ -116,6 +121,12 @@ ${recommendations.map((item) => `- [${item.title}](${item.url}) - ${item.reason}
 
 ## 问答摘录
 ${chats.map((item) => `### ${item.role === "user" ? "我" : "助手"}\n${item.content}`).join("\n\n") || "暂无"}
+
+## 批注要点
+${annotations.map((item) => `- ${item.quoteText ? `「${item.quoteText}」` : ""} ${item.content}`).join("\n") || "暂无"}
+
+## 正文节选
+${textHighlights.join("\n") || "- 暂无"}
 
 ## 我的想法
 - 

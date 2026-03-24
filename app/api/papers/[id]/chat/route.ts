@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 
 import { answerPaperQuestion } from "@/lib/llm";
 import { appendChatMessage, getPaper } from "@/lib/storage";
-import { runQaContextAgent } from "@/lib/search";
 import type { ChatMessage } from "@/lib/types";
 
 interface Context {
@@ -12,8 +11,11 @@ interface Context {
 
 export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
-  const body = (await request.json()) as { question?: string };
+  const body = (await request.json()) as { question?: string; contextBlockIds?: string[] };
   const question = body.question?.trim();
+  const contextBlockIds = Array.isArray(body.contextBlockIds)
+    ? body.contextBlockIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
 
   if (!question) {
     return NextResponse.json({ error: "请输入问题。" }, { status: 400 });
@@ -25,11 +27,7 @@ export async function POST(request: Request, context: Context) {
   }
 
   try {
-    const externalContext = await runQaContextAgent({
-      currentPaper: paper,
-      query: question,
-    });
-    const answer = await answerPaperQuestion(paper, question, externalContext.items);
+    const answer = await answerPaperQuestion(paper, question, { contextBlockIds });
     const createdAt = new Date().toISOString();
 
     const messages: ChatMessage[] = [

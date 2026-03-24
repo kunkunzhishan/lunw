@@ -95,11 +95,31 @@ export interface ExportedNote {
   exportedAt: string;
 }
 
+export interface PaperAnnotation {
+  id: string;
+  blockId: string;
+  threadId: string;
+  quoteText?: string;
+  quoteStart?: number;
+  quoteEnd?: number;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepositoryRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PaperRecord {
   id: string;
   title: string;
   authors: string[];
   source: string;
+  repositoryId: string;
   uploadPath: string;
   status: PaperStatus;
   createdAt: string;
@@ -107,6 +127,7 @@ export interface PaperRecord {
   text: string;
   blocks: PaperBlock[];
   assets: PaperAsset[];
+  annotations: PaperAnnotation[];
   summary?: PaperSummary;
   chatHistory: ChatMessage[];
   recommendations: RecommendationItem[];
@@ -117,6 +138,7 @@ export interface PaperRecord {
 }
 
 export interface DatabaseSchema {
+  repositories: RepositoryRecord[];
   papers: PaperRecord[];
 }
 
