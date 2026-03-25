@@ -27,6 +27,8 @@ export interface FormulaPaperBlock extends PaperBlockBase {
   latex?: string;
   assetId?: string;
   assetPath?: string;
+  formulaExplanation?: string;
+  formulaExplanationUpdatedAt?: string;
 }
 
 export interface AssetPaperBlock extends PaperBlockBase {
@@ -107,6 +109,15 @@ export interface PaperAnnotation {
   updatedAt: string;
 }
 
+export interface PaperHighlight {
+  id: string;
+  blockId: string;
+  quoteText?: string;
+  quoteStart?: number;
+  quoteEnd?: number;
+  createdAt: string;
+}
+
 export interface RepositoryRecord {
   id: string;
   name: string;
@@ -128,6 +139,7 @@ export interface PaperRecord {
   blocks: PaperBlock[];
   assets: PaperAsset[];
   annotations: PaperAnnotation[];
+  highlights: PaperHighlight[];
   summary?: PaperSummary;
   chatHistory: ChatMessage[];
   recommendations: RecommendationItem[];

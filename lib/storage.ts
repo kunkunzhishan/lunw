@@ -20,6 +20,7 @@ import type {
   PaperAnnotation,
   PaperAsset,
   PaperBlock,
+  PaperHighlight,
   PaperRecord,
   RecommendationItem,
   RepositoryRecord,
@@ -122,6 +123,47 @@ function normalizeAnnotations(value: unknown): PaperAnnotation[] {
   }
 
   return annotations;
+}
+
+function normalizeHighlights(value: unknown): PaperHighlight[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const highlights: PaperHighlight[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const raw = item as Record<string, unknown>;
+    const id = toSafeString(raw.id).trim();
+    const blockId = toSafeString(raw.blockId).trim();
+    const quoteText = toSafeString(raw.quoteText).trim();
+    const quoteStartRaw = Number(raw.quoteStart);
+    const quoteEndRaw = Number(raw.quoteEnd);
+    const quoteStart = Number.isInteger(quoteStartRaw) && quoteStartRaw >= 0 ? quoteStartRaw : undefined;
+    const quoteEnd = Number.isInteger(quoteEndRaw) && quoteEndRaw >= 0 ? quoteEndRaw : undefined;
+    const createdAt = toSafeString(raw.createdAt).trim();
+    if (!id || !blockId) {
+      continue;
+    }
+    highlights.push({
+      id,
+      blockId,
+      quoteText: quoteText || undefined,
+      quoteStart:
+        quoteStart !== undefined && quoteEnd !== undefined && quoteStart < quoteEnd
+          ? quoteStart
+          : undefined,
+      quoteEnd:
+        quoteStart !== undefined && quoteEnd !== undefined && quoteStart < quoteEnd
+          ? quoteEnd
+          : undefined,
+      createdAt: createdAt || new Date().toISOString(),
+    });
+  }
+
+  return highlights;
 }
 
 function createRepositoryRecord(name: string, now: string): RepositoryRecord {
@@ -272,6 +314,7 @@ async function migrateLegacyPaper(rawPaper: Record<string, unknown>, repositoryI
     blocks,
     assets,
     annotations: normalizeAnnotations(paper.annotations),
+    highlights: normalizeHighlights(paper.highlights),
     summary: paper.summary as PaperRecord["summary"],
     chatHistory: Array.isArray(paper.chatHistory) ? (paper.chatHistory as PaperRecord["chatHistory"]) : [],
     recommendations: Array.isArray(paper.recommendations)
@@ -372,6 +415,7 @@ async function normalizeDb(raw: Partial<DatabaseSchema>): Promise<{ db: Database
     const rawItem = item as unknown as Record<string, unknown>;
     const repositoryId = resolveRepositoryId(rawItem);
     const annotations = normalizeAnnotations(rawItem.annotations);
+    const highlights = normalizeHighlights(rawItem.highlights);
     const hasBlocks = Array.isArray(rawItem.blocks);
     const hasAssets = Array.isArray(rawItem.assets);
 
@@ -380,12 +424,14 @@ async function normalizeDb(raw: Partial<DatabaseSchema>): Promise<{ db: Database
         ...item,
         repositoryId,
         annotations,
+        highlights,
       };
 
       if (
         repositoryId !== toSafeString(rawItem.repositoryId).trim() ||
         (typeof rawItem.category === "string" && rawItem.category.trim()) ||
         annotations.length !== (Array.isArray(rawItem.annotations) ? rawItem.annotations.length : 0)
+        || highlights.length !== (Array.isArray(rawItem.highlights) ? rawItem.highlights.length : 0)
       ) {
         changed = true;
       }
@@ -414,6 +460,7 @@ async function normalizeDb(raw: Partial<DatabaseSchema>): Promise<{ db: Database
         blocks: [],
         assets: [],
         annotations: normalizeAnnotations(safeItem.annotations),
+        highlights: normalizeHighlights(safeItem.highlights),
         summary: safeItem.summary as PaperRecord["summary"],
         chatHistory: Array.isArray(safeItem.chatHistory) ? (safeItem.chatHistory as PaperRecord["chatHistory"]) : [],
         recommendations: Array.isArray(safeItem.recommendations)
@@ -558,6 +605,7 @@ export async function savePaper(paper: PaperRecord) {
     ...paper,
     repositoryId: repositoryExists ? paper.repositoryId : DEFAULT_REPOSITORY_ID,
     annotations: normalizeAnnotations(paper.annotations),
+    highlights: normalizeHighlights(paper.highlights),
   };
 
   if (existingIndex >= 0) {
@@ -584,6 +632,7 @@ export async function updatePaper(id: string, updater: (paper: PaperRecord) => P
     ...updatedPaper,
     repositoryId: repositoryExists ? updatedPaper.repositoryId : DEFAULT_REPOSITORY_ID,
     annotations: normalizeAnnotations(updatedPaper.annotations),
+    highlights: normalizeHighlights(updatedPaper.highlights),
   };
   await writeDb(db);
   return db.papers[index];

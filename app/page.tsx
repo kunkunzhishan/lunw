@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { EmptyState } from "@/components/research/EmptyState";
 import { LoadingState } from "@/components/research/LoadingState";
@@ -8,7 +8,7 @@ import { PaperReader } from "@/components/research/PaperReader";
 import { RightPanel, type ChatContextRef, type RightPanelTab } from "@/components/research/RightPanel";
 import { Sidebar } from "@/components/research/Sidebar";
 import { TopBar } from "@/components/research/TopBar";
-import type { PaperRecord, PaperStatus, RecommendationResponse, TextPaperBlock } from "@/lib/types";
+import type { FormulaPaperBlock, PaperRecord, PaperStatus, RecommendationResponse, TextPaperBlock } from "@/lib/types";
 
 type ViewState = "idle" | "uploading" | "parsing" | "ready" | "error";
 
@@ -77,7 +77,6 @@ export default function ResearchPage() {
   const [activePaper, setActivePaper] = useState<PaperRecord | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [activeTab, setActiveTab] = useState<RightPanelTab>("chat");
-  const [chatInput, setChatInput] = useState("");
   const [chatContextRefs, setChatContextRefs] = useState<ChatContextRef[]>([]);
   const [selectedPaperIds, setSelectedPaperIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -85,6 +84,7 @@ export default function ResearchPage() {
   const [recommendationScope, setRecommendationScope] = useState<"current" | "history" | "direction">("current");
   const [recommendationData, setRecommendationData] = useState<RecommendationResponse | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [explainingFormulaBlockId, setExplainingFormulaBlockId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
@@ -102,6 +102,7 @@ export default function ResearchPage() {
     obsidianExportDir: "",
     mineruApiToken: "",
   });
+  const autoFormulaExplainFailedRef = useRef<Map<string, Set<string>>>(new Map());
 
   async function fetchRepositories() {
     const response = await fetch("/api/repositories");
@@ -510,9 +511,10 @@ export default function ResearchPage() {
     }
   }
 
-  async function handleChatSubmit() {
-    if (!activePaper || !chatInput.trim()) {
-      return;
+  async function handleChatSubmit(question: string) {
+    const normalizedQuestion = question.trim();
+    if (!activePaper || !normalizedQuestion) {
+      return false;
     }
 
     setError(null);
@@ -523,8 +525,14 @@ export default function ResearchPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question: chatInput,
+          question: normalizedQuestion,
           contextBlockIds: chatContextRefs.map((item) => item.blockId),
+          contextQuotes: chatContextRefs.map((item) => ({
+            blockId: item.blockId,
+            quoteText: item.quoteText,
+            quoteStart: item.quoteStart,
+            quoteEnd: item.quoteEnd,
+          })),
         }),
       });
 
@@ -537,11 +545,12 @@ export default function ResearchPage() {
         ...payload,
         repositoryId: normalizeRepositoryId(payload.repositoryId),
       });
-      setChatInput("");
       setChatContextRefs([]);
       setActiveTab("chat");
+      return true;
     } catch (chatError) {
       setError(chatError instanceof Error ? chatError.message : "问答失败");
+      return false;
     } finally {
       setIsBusy(false);
     }
@@ -622,16 +631,41 @@ export default function ResearchPage() {
     }
   }
 
-  function handleQuoteBlock(block: TextPaperBlock) {
+  function handleQuoteBlock(params: {
+    block: TextPaperBlock;
+    quoteText?: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) {
+    const { block, quoteText, quoteStart, quoteEnd } = params;
     setAssistantOpen(true);
     setActiveTab("chat");
-    const snippet = block.english.replace(/\s+/g, " ").trim();
+    const exactSelection = quoteText?.trim()
+      || (
+        quoteStart !== undefined
+        && quoteEnd !== undefined
+        && quoteEnd > quoteStart
+          ? block.english.slice(quoteStart, quoteEnd).trim()
+          : ""
+      );
+    const snippet = (exactSelection || block.english).replace(/\s+/g, " ").trim();
     const label = snippet.length > 48 ? `${snippet.slice(0, 48)}...` : snippet;
+    const contextId = `${block.id}:${quoteStart ?? -1}:${quoteEnd ?? -1}:${label}`;
     setChatContextRefs((current) => {
-      if (current.some((item) => item.blockId === block.id)) {
+      if (current.some((item) => item.id === contextId)) {
         return current;
       }
-      return [...current, { blockId: block.id, label: `P${block.page} · ${label}` }];
+      return [
+        ...current,
+        {
+          id: contextId,
+          blockId: block.id,
+          label: `P${block.page} · ${label}`,
+          quoteText: exactSelection || undefined,
+          quoteStart,
+          quoteEnd,
+        },
+      ];
     });
   }
 
@@ -679,6 +713,86 @@ export default function ResearchPage() {
     }
   }
 
+  async function handleAddHighlight(params: {
+    block: TextPaperBlock;
+    quoteText?: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) {
+    if (!activePaper) {
+      return;
+    }
+
+    setError(null);
+    setIsBusy(true);
+    try {
+      const response = await fetch(`/api/papers/${activePaper.id}/highlights`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          blockId: params.block.id,
+          quoteText: params.quoteText,
+          quoteStart: params.quoteStart,
+          quoteEnd: params.quoteEnd,
+        }),
+      });
+      const payload = (await response.json()) as PaperRecord | { error: string };
+      if (!response.ok || "error" in payload) {
+        throw new Error("error" in payload ? payload.error : "划重点失败");
+      }
+
+      setActivePaper({
+        ...payload,
+        repositoryId: normalizeRepositoryId(payload.repositoryId),
+      });
+      await fetchPapers();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "划重点失败");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleRemoveHighlight(params: {
+    highlightId?: string;
+    blockId: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) {
+    if (!activePaper) {
+      return;
+    }
+
+    setError(null);
+    setIsBusy(true);
+    try {
+      const response = await fetch(`/api/papers/${activePaper.id}/highlights`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          highlightId: params.highlightId,
+          blockId: params.blockId,
+          quoteStart: params.quoteStart,
+          quoteEnd: params.quoteEnd,
+        }),
+      });
+      const payload = (await response.json()) as PaperRecord | { error: string };
+      if (!response.ok || "error" in payload) {
+        throw new Error("error" in payload ? payload.error : "取消划重点失败");
+      }
+
+      setActivePaper({
+        ...payload,
+        repositoryId: normalizeRepositoryId(payload.repositoryId),
+      });
+      await fetchPapers();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "取消划重点失败");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function handleDeleteAnnotation(annotationId: string) {
     if (!activePaper) {
       return;
@@ -710,6 +824,79 @@ export default function ResearchPage() {
       setIsBusy(false);
     }
   }
+
+  async function handleExplainFormula(block: FormulaPaperBlock, options?: { auto?: boolean }) {
+    if (!activePaper) {
+      return;
+    }
+    if (explainingFormulaBlockId === block.id) {
+      return;
+    }
+
+    if (!options?.auto) {
+      setError(null);
+      setIsBusy(true);
+    }
+    setExplainingFormulaBlockId(block.id);
+    try {
+      const response = await fetch(`/api/papers/${activePaper.id}/formulas/explain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blockId: block.id }),
+      });
+      const payload = await parseJsonResponse<PaperRecord>(response);
+      if (!response.ok || hasApiError(payload)) {
+        throw new Error(hasApiError(payload) ? payload.error : "公式注释失败");
+      }
+      setActivePaper({
+        ...payload,
+        repositoryId: normalizeRepositoryId(payload.repositoryId),
+      });
+
+      if (options?.auto) {
+        const failedSet = autoFormulaExplainFailedRef.current.get(activePaper.id);
+        failedSet?.delete(block.id);
+      } else {
+        await fetchPapers();
+      }
+    } catch (actionError) {
+      if (options?.auto) {
+        const failedSet = autoFormulaExplainFailedRef.current.get(activePaper.id) ?? new Set<string>();
+        failedSet.add(block.id);
+        autoFormulaExplainFailedRef.current.set(activePaper.id, failedSet);
+      } else {
+        setError(actionError instanceof Error ? actionError.message : "公式注释失败");
+      }
+    } finally {
+      setExplainingFormulaBlockId(null);
+      if (!options?.auto) {
+        setIsBusy(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!activePaper || viewState !== "ready" || explainingFormulaBlockId) {
+      return;
+    }
+
+    const formulaBlocks = activePaper.blocks.filter(
+      (block): block is FormulaPaperBlock => block.type === "formula" && Boolean(block.latex?.trim()),
+    );
+    if (!formulaBlocks.length) {
+      return;
+    }
+
+    const failedSet = autoFormulaExplainFailedRef.current.get(activePaper.id) ?? new Set<string>();
+    const nextFormula = formulaBlocks.find(
+      (block) => !block.formulaExplanation?.trim() && !failedSet.has(block.id),
+    );
+    if (!nextFormula) {
+      return;
+    }
+
+    void handleExplainFormula(nextFormula, { auto: true });
+  }, [activePaper, viewState, explainingFormulaBlockId]);
 
   const filteredBlocks =
     activePaper?.blocks.filter((block) => {
@@ -788,9 +975,13 @@ export default function ResearchPage() {
               paper={activePaper}
               searchQuery={searchQuery}
               blocks={filteredBlocks}
-              quotedBlockIds={chatContextRefs.map((item) => item.blockId)}
+              quotedContextKeys={chatContextRefs.map((item) => item.id)}
+              explainingFormulaBlockId={explainingFormulaBlockId}
               onAddAnnotation={(params) => void handleAddAnnotation(params)}
+              onAddHighlight={(params) => void handleAddHighlight(params)}
+              onRemoveHighlight={(params) => void handleRemoveHighlight(params)}
               onDeleteAnnotation={(annotationId) => void handleDeleteAnnotation(annotationId)}
+              onExplainFormula={(block) => void handleExplainFormula(block)}
               onQuoteBlock={handleQuoteBlock}
             />
           )}
@@ -829,16 +1020,14 @@ export default function ResearchPage() {
               activeScope={recommendationScope}
               activeTab={activeTab}
               busy={isBusy}
-              chatInput={chatInput}
               chatContextRefs={chatContextRefs}
               messages={activePaper.chatHistory}
               note={activePaper.lastExport}
               onChangeScope={(scope) => void handleRecommend(scope)}
-              onChatInputChange={setChatInput}
               onClearChatContext={() => setChatContextRefs([])}
-              onRemoveChatContext={(blockId) =>
-                setChatContextRefs((current) => current.filter((item) => item.blockId !== blockId))}
-              onSubmitChat={() => void handleChatSubmit()}
+              onRemoveChatContext={(contextId) =>
+                setChatContextRefs((current) => current.filter((item) => item.id !== contextId))}
+              onSubmitChat={handleChatSubmit}
               onTabChange={setActiveTab}
               recommendationData={recommendationData}
               recommendations={activePaper.recommendations}

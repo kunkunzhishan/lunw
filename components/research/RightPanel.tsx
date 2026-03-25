@@ -12,26 +12,96 @@ import {
   ChevronRight,
   X,
 } from "lucide-react";
+import katex from "katex";
 
 import type { ChatMessage, ExportedNote, RecommendationItem, RecommendationResponse } from "@/lib/types";
 
 export type RightPanelTab = "chat" | "related" | "notes";
 
+interface ChatMathSegment {
+  type: "text" | "math";
+  value: string;
+  displayMode?: boolean;
+}
+
+function parseChatMathSegments(input: string): ChatMathSegment[] {
+  const segments: ChatMathSegment[] = [];
+  const pattern = /\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$/g;
+  let lastIndex = 0;
+
+  for (const match of input.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      segments.push({ type: "text", value: input.slice(lastIndex, index) });
+    }
+
+    const blockDollar = match[1];
+    const inlineParen = match[2];
+    const blockBracket = match[3];
+    const inlineDollar = match[4];
+    const mathValue = (blockDollar ?? inlineParen ?? blockBracket ?? inlineDollar ?? "").trim();
+    if (mathValue) {
+      segments.push({
+        type: "math",
+        value: mathValue,
+        displayMode: Boolean(blockDollar || blockBracket),
+      });
+    }
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < input.length) {
+    segments.push({ type: "text", value: input.slice(lastIndex) });
+  }
+  return segments.length ? segments : [{ type: "text", value: input }];
+}
+
+const ChatMessageContent = ({ content }: { content: string }) => {
+  const segments = React.useMemo(() => parseChatMathSegments(content), [content]);
+  return (
+    <div className="whitespace-pre-wrap leading-7">
+      {segments.map((segment, index) => {
+        if (segment.type === "text") {
+          return <React.Fragment key={`text-${index}`}>{segment.value}</React.Fragment>;
+        }
+        try {
+          const rendered = katex.renderToString(segment.value, {
+            displayMode: segment.displayMode ?? false,
+            throwOnError: false,
+            strict: "ignore",
+          });
+          return (
+            <span
+              className={`inline-math ${segment.displayMode ? "inline-math-display" : ""}`}
+              dangerouslySetInnerHTML={{ __html: rendered }}
+              key={`math-${index}`}
+            />
+          );
+        } catch {
+          return <code className="rounded bg-slate-200/70 px-1 py-0.5 text-xs" key={`fallback-${index}`}>{segment.value}</code>;
+        }
+      })}
+    </div>
+  );
+};
+
 export interface ChatContextRef {
+  id: string;
   blockId: string;
   label: string;
+  quoteText?: string;
+  quoteStart?: number;
+  quoteEnd?: number;
 }
 
 export const RightPanel = ({
   activeScope,
   activeTab,
   busy,
-  chatInput,
   chatContextRefs,
   messages,
   note,
   onChangeScope,
-  onChatInputChange,
   onClearChatContext,
   onRemoveChatContext,
   onSubmitChat,
@@ -42,15 +112,13 @@ export const RightPanel = ({
   activeScope: "current" | "history" | "direction";
   activeTab: RightPanelTab;
   busy: boolean;
-  chatInput: string;
   chatContextRefs: ChatContextRef[];
   messages: ChatMessage[];
   note?: ExportedNote;
   onChangeScope: (scope: "current" | "history" | "direction") => void;
-  onChatInputChange: (value: string) => void;
   onClearChatContext: () => void;
-  onRemoveChatContext: (blockId: string) => void;
-  onSubmitChat: () => void;
+  onRemoveChatContext: (contextId: string) => void;
+  onSubmitChat: (question: string) => Promise<boolean> | boolean;
   onTabChange: (tab: RightPanelTab) => void;
   recommendationData: RecommendationResponse | null;
   recommendations: RecommendationItem[];
@@ -85,10 +153,8 @@ export const RightPanel = ({
         {activeTab === "chat" && (
           <ChatTab
             busy={busy}
-            chatInput={chatInput}
             chatContextRefs={chatContextRefs}
             messages={messages}
-            onChatInputChange={onChatInputChange}
             onClearChatContext={onClearChatContext}
             onRemoveChatContext={onRemoveChatContext}
             onSubmitChat={onSubmitChat}
@@ -122,23 +188,39 @@ const TabButton = ({ active, onClick, icon, label }: { active: boolean, onClick:
 
 const ChatTab = ({
   busy,
-  chatInput,
   chatContextRefs,
   messages,
-  onChatInputChange,
   onClearChatContext,
   onRemoveChatContext,
   onSubmitChat,
 }: {
   busy: boolean;
-  chatInput: string;
   chatContextRefs: ChatContextRef[];
   messages: ChatMessage[];
-  onChatInputChange: (value: string) => void;
   onClearChatContext: () => void;
-  onRemoveChatContext: (blockId: string) => void;
-  onSubmitChat: () => void;
-}) => (
+  onRemoveChatContext: (contextId: string) => void;
+  onSubmitChat: (question: string) => Promise<boolean> | boolean;
+}) => {
+  const [draft, setDraft] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+
+  const handleSubmit = React.useCallback(async () => {
+    const question = draft.trim();
+    if (!question || busy || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const success = await onSubmitChat(question);
+      if (success) {
+        setDraft("");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }, [busy, draft, onSubmitChat, submitting]);
+
+  return (
   <div className="h-full flex flex-col p-4">
     <div className="flex-1 space-y-4">
       {messages.length === 0 ? (
@@ -160,7 +242,7 @@ const ChatTab = ({
           }`}
           key={message.id}
         >
-          <div className="whitespace-pre-wrap">{message.content}</div>
+          <ChatMessageContent content={message.content} />
           {message.sourceRefs.length ? (
             <div className="mt-3 space-y-1 border-t border-slate-200/60 pt-3 text-xs text-slate-500">
               {message.sourceRefs.map((ref, index) => (
@@ -190,9 +272,9 @@ const ChatTab = ({
             {chatContextRefs.map((item) => (
               <button
                 type="button"
-                key={item.blockId}
+                key={item.id}
                 className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-white px-2 py-0.5 text-[11px] text-teal-700"
-                onClick={() => onRemoveChatContext(item.blockId)}
+                onClick={() => onRemoveChatContext(item.id)}
               >
                 <span className="max-w-[170px] truncate">{item.label}</span>
                 <X size={12} />
@@ -204,19 +286,20 @@ const ChatTab = ({
       <textarea 
         placeholder="询问关于论文的任何问题..." 
         className="w-full p-4 pr-12 bg-slate-100 border-none rounded-2xl text-sm resize-none h-24 focus:ring-2 focus:ring-teal-500/20 outline-none"
-        value={chatInput}
-        onChange={(event) => onChatInputChange(event.target.value)}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
       />
       <button
         className="absolute right-3 bottom-3 p-2 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors disabled:opacity-60"
-        disabled={busy || !chatInput.trim()}
-        onClick={onSubmitChat}
+        disabled={busy || submitting || !draft.trim()}
+        onClick={() => void handleSubmit()}
       >
         <Send size={16} />
       </button>
     </div>
   </div>
-);
+  );
+};
 
 const RelatedTab = ({
   activeScope,

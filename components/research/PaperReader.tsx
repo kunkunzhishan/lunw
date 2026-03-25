@@ -1,10 +1,18 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { BookOpen, ImageIcon, Quote, Sigma, Table2, StickyNote, X } from "lucide-react";
+import { BookOpen, ChevronRight, Highlighter, ImageIcon, List, Quote, Sigma, Table2, StickyNote, X } from "lucide-react";
 import katex from "katex";
 
-import type { AssetPaperBlock, PaperAnnotation, PaperBlock, PaperRecord, TextPaperBlock } from "@/lib/types";
+import type {
+  AssetPaperBlock,
+  FormulaPaperBlock,
+  PaperAnnotation,
+  PaperBlock,
+  PaperHighlight,
+  PaperRecord,
+  TextPaperBlock,
+} from "@/lib/types";
 
 interface InlineMathSegment {
   type: "text" | "math";
@@ -69,7 +77,7 @@ function normalizeCaptionText(input: string) {
   return normalized;
 }
 
-type ParentheticalStyle = "numericCitation" | "authorCitation" | "aside" | "enumeration";
+type ParentheticalStyle = "numericCitation" | "authorCitation" | "aside" | "enumeration" | "bracketCitation";
 
 interface CitationTextSegment {
   type: "text" | "citation";
@@ -79,13 +87,33 @@ interface CitationTextSegment {
 
 function insertEnumerationLineBreaks(input: string) {
   const markerPattern = /(?:\(\d{1,2}\)|（\d{1,2}）)/g;
+  const bulletReferencePattern = /(?:[•●▪◦]\s*\[\d{1,4}\])/g;
+  const bulletEntryPattern = /(?:[•●▪◦∙·◆◇○◉▫‣⁃]\s*(?:\[\d{1,4}\]|[A-Z\u4e00-\u9fa5]))/g;
+  const bracketReferencePattern = /(?:\[\d{1,4}\])/g;
   const markerCount = (input.match(markerPattern) ?? []).length;
-  if (markerCount < 2) {
+  const bulletReferenceCount = (input.match(bulletReferencePattern) ?? []).length;
+  const bulletEntryCount = (input.match(bulletEntryPattern) ?? []).length;
+  const bracketReferenceCount = (input.match(bracketReferencePattern) ?? []).length;
+
+  if (markerCount < 2 && bulletReferenceCount < 2 && bulletEntryCount < 2 && bracketReferenceCount < 2) {
     return input;
   }
 
-  return input
-    .replace(/\s*(\(\d{1,2}\)|（\d{1,2}）)\s*/g, "\n$1 ")
+  let normalized = input;
+  if (markerCount >= 2) {
+    normalized = normalized.replace(/\s*(\(\d{1,2}\)|（\d{1,2}）)\s*/g, "\n$1 ");
+  }
+  if (bulletReferenceCount >= 2) {
+    normalized = normalized.replace(/\s*([•●▪◦]\s*\[\d{1,4}\])\s*/g, "\n$1 ");
+  }
+  if (bulletEntryCount >= 2) {
+    normalized = normalized.replace(/\s*([•●▪◦∙·◆◇○◉▫‣⁃])\s*(?=(?:\[\d{1,4}\]|[A-Z\u4e00-\u9fa5]))/g, "\n$1 ");
+  }
+  if (bracketReferenceCount >= 2) {
+    normalized = normalized.replace(/\s*(\[\d{1,4}\])\s*/g, "\n$1 ");
+  }
+
+  return normalized
     .replace(/\n{2,}/g, "\n")
     .trim();
 }
@@ -94,11 +122,50 @@ function isEnumeratedSentence(value: string) {
   return /^(\(\d{1,2}\)|（\d{1,2}）)\s*/.test(value.trim());
 }
 
-function classifyCitationStyle(parenthesized: string): ParentheticalStyle | null {
-  const normalized = parenthesized.trim();
-  const inner = normalized.startsWith("（")
-    ? normalized.slice(1, -1).trim()
-    : normalized.slice(1, -1).trim();
+function stripLeadingListMarker(value: string) {
+  return value.replace(/^[\s\u200B\u200C\u200D\uFEFF]*[•●▪◦∙·◆◇○◉▫‣⁃-]+\s*/u, "");
+}
+
+function isReferenceListLine(value: string) {
+  const normalized = value.trim();
+  const markerStripped = stripLeadingListMarker(normalized);
+  const hasDirectBracketPrefix = /^\[\d{1,4}\](?:\s|$)/.test(normalized);
+  if (hasDirectBracketPrefix) {
+    return true;
+  }
+
+  const hasLeadingBulletMarker = markerStripped !== normalized;
+  if (!hasLeadingBulletMarker) {
+    return false;
+  }
+
+  if (/^\[\d{1,4}\](?:\s|$)/.test(markerStripped)) {
+    return true;
+  }
+
+  const hasYear = /\b(?:19|20)\d{2}[a-z]?\b/.test(markerStripped);
+  const authorInitialCount = (markerStripped.match(/,\s*[A-Z](?:\.[A-Z])*\.?/g) ?? []).length;
+  const hasAuthorStart = /^[A-Z][A-Za-z'`-]+,\s*[A-Z](?:\.[A-Z])*\.?/.test(markerStripped);
+  const hasVenueHint = /(arxiv|corr|neurips|iclr|icml|acl|emnlp|cvpr|eccv|aaai|url|doi|in:)/i.test(markerStripped);
+
+  return hasYear && (hasAuthorStart || authorInitialCount >= 2 || hasVenueHint);
+}
+
+function classifyCitationStyle(token: string): ParentheticalStyle | null {
+  const normalized = token.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^\[\s*\d{1,4}(?:\s*[-,]\s*\d{1,4})*\s*\]$/.test(normalized)) {
+    return "bracketCitation";
+  }
+
+  if (!((normalized.startsWith("(") && normalized.endsWith(")")) || (normalized.startsWith("（") && normalized.endsWith("）")))) {
+    return null;
+  }
+
+  const inner = normalized.slice(1, -1).trim();
   if (!inner) {
     return null;
   }
@@ -128,7 +195,7 @@ function classifyCitationStyle(parenthesized: string): ParentheticalStyle | null
 
 function splitCitationText(input: string): CitationTextSegment[] {
   const segments: CitationTextSegment[] = [];
-  const pattern = /(?:\([^()\n]{1,160}\)|（[^（）\n]{1,160}）)/g;
+  const pattern = /(?:\([^()\n]{1,160}\)|（[^（）\n]{1,160}）|\[\s*\d{1,4}(?:\s*[-,]\s*\d{1,4})*\s*\])/g;
   let lastIndex = 0;
 
   for (const match of input.matchAll(pattern)) {
@@ -256,6 +323,22 @@ function renderPlainTextWithCitationStyle(input: string, keyPrefix: string) {
       );
     }
 
+    if (segment.style === "authorCitation") {
+      return (
+        <span className="text-[0.9em] text-slate-500" key={`${keyPrefix}-citation-${index}`}>
+          {segment.value}
+        </span>
+      );
+    }
+
+    if (segment.style === "bracketCitation") {
+      return (
+        <span className="text-[0.9em] text-slate-400" key={`${keyPrefix}-citation-${index}`}>
+          {segment.value}
+        </span>
+      );
+    }
+
     return (
       <span className="text-[0.9em] text-slate-400" key={`${keyPrefix}-citation-${index}`}>
         {segment.value}
@@ -371,95 +454,6 @@ function FormulaView({
   return <div className="text-sm text-red-600">公式渲染失败，且缺少公式图资产。</div>;
 }
 
-function extractFormulaVariables(latex: string) {
-  const cleaned = latex
-    .replace(/\\(mathrm|text|operatorname)\{([^}]*)\}/g, "$2")
-    .replace(/\\[a-zA-Z]+/g, " ")
-    .replace(/[{}^_]/g, " ");
-  const rawTokens = cleaned.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [];
-  const deduped = Array.from(
-    new Set(
-      rawTokens
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 1 && token.length <= 12),
-    ),
-  );
-  return deduped.slice(0, 4);
-}
-
-function buildFormulaPlainExplanation(latex?: string) {
-  const normalized = latex?.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const signals: string[] = [];
-  const hasArgmax = /\\argmax|argmax/i.test(normalized);
-  const hasArgmin = /\\argmin|argmin/i.test(normalized);
-  const hasEquality = /=/.test(normalized);
-  const hasInequality = /<=|>=|<|>|\\leq|\\geq/.test(normalized);
-  const hasArrow = /\\to|\\rightarrow|→/.test(normalized);
-  const hasSum = /\\sum/.test(normalized);
-  const hasIntegral = /\\int/.test(normalized);
-  const hasProduct = /\\prod/.test(normalized);
-  const hasFraction = /\\frac/.test(normalized);
-  const hasNorm = /\\lVert|\\rVert|\|\|/.test(normalized);
-  const hasProbability = /\\Pr|P\(|p\(/.test(normalized);
-  const hasLogExp = /\\log|\\ln|\\exp/.test(normalized);
-  const hasPower = /(?:\^\{[^}]+\}|\^[A-Za-z0-9])/.test(normalized);
-
-  if (hasArgmax) {
-    signals.push("在做“最大化”优化，目标是找到让函数值最大的变量");
-  } else if (hasArgmin) {
-    signals.push("在做“最小化”优化，目标是找到让函数值最小的变量");
-  } else if (hasEquality) {
-    signals.push("在定义或计算左侧变量，右侧是它的组成方式");
-  } else if (hasInequality) {
-    signals.push("在表达变量之间的大小约束关系");
-  } else if (hasArrow) {
-    signals.push("在描述状态/变量从一侧到另一侧的映射或更新");
-  } else {
-    signals.push("在描述几个变量之间的数学关系");
-  }
-
-  if (hasSum || hasIntegral || hasProduct) {
-    const aggregateParts: string[] = [];
-    if (hasSum) {
-      aggregateParts.push("求和");
-    }
-    if (hasIntegral) {
-      aggregateParts.push("积分");
-    }
-    if (hasProduct) {
-      aggregateParts.push("连乘");
-    }
-    signals.push(`包含${aggregateParts.join(" / ")}，表示把多项信息汇总`);
-  }
-
-  if (hasFraction) {
-    signals.push("有分式结构，通常表示比例或归一化");
-  }
-  if (hasNorm) {
-    signals.push("含有范数项，常用于衡量误差或距离");
-  }
-  if (hasProbability) {
-    signals.push("带有概率表达，用于建模不确定性");
-  }
-  if (hasLogExp) {
-    signals.push("使用了对数/指数变换，强调尺度变化");
-  }
-  if (hasPower) {
-    signals.push("包含幂次项，体现非线性影响");
-  }
-
-  const variableHint = extractFormulaVariables(normalized);
-  if (variableHint.length) {
-    signals.push(`关注变量：${variableHint.join("、")}`);
-  }
-
-  return `白话：${signals.slice(0, 3).join("；")}。`;
-}
-
 interface AnnotationThread {
   threadId: string;
   blockId: string;
@@ -477,94 +471,257 @@ interface SentenceChunk {
   text: string;
   start: number;
   end: number;
+  forceBlock?: boolean;
+  isReferenceLine?: boolean;
+}
+
+interface LocalTextRange {
+  start: number;
+  end: number;
+}
+
+interface StyledLocalTextRange extends LocalTextRange {
+  kind: "annotation" | "highlight";
+}
+
+interface ElementSelectionRange {
+  quoteText: string;
+  start: number;
+  end: number;
+}
+
+interface TocItem {
+  blockId: string;
+  title: string;
+  page: number;
+  level: number;
+}
+
+interface TocNode extends TocItem {
+  children: TocNode[];
+}
+
+function extractHeadingNumberToken(title: string) {
+  const normalized = title.trim();
+  const decimalMatch = normalized.match(/^(?:section\s+)?(\d+(?:\.\d+){0,4})(?:[\s.:：、\-]|$)/i);
+  if (decimalMatch?.[1]) {
+    return decimalMatch[1];
+  }
+  const chineseChapterMatch = normalized.match(/^(第[一二三四五六七八九十百千\d]+[章节部分])/);
+  if (chineseChapterMatch?.[1]) {
+    return chineseChapterMatch[1];
+  }
+  return "";
+}
+
+function inferHeadingLevel(title: string, providedLevel?: number) {
+  if (Number.isFinite(providedLevel) && (providedLevel as number) > 1) {
+    return Math.min(4, Math.max(1, Math.floor(providedLevel as number)));
+  }
+  const normalized = title.trim();
+  const numberToken = extractHeadingNumberToken(normalized);
+  if (numberToken && /^\d/.test(numberToken)) {
+    return Math.min(4, Math.max(1, numberToken.split(".").length));
+  }
+  if (/^(?:appendix|references|acknowledg(e)?ments?)/i.test(normalized)) {
+    return 1;
+  }
+  if (/^(?:附录|参考文献|致谢)/.test(normalized)) {
+    return 1;
+  }
+  if (/^[A-Z]\./.test(normalized)) {
+    return 2;
+  }
+  return 1;
+}
+
+function normalizeHeadingForCompare(title: string) {
+  return title
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s.]/gu, "")
+    .trim();
 }
 
 function splitSentences(text: string): SentenceChunk[] {
-  return insertEnumerationLineBreaks(text)
-    .split(/\n+|(?<=[。！？!?\.])\s+/)
+  interface SentenceCandidate {
+    text: string;
+    forceBlock?: boolean;
+    isReferenceLine?: boolean;
+  }
+
+  const normalizedText = insertEnumerationLineBreaks(text);
+  const lineCandidates = normalizedText
+    .split(/\n+/)
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((sentence, index, list) => {
-      const withTrailingSpace = `${sentence}${index < list.length - 1 ? " " : ""}`;
-      return withTrailingSpace;
-    })
-    .reduce<{ chunks: SentenceChunk[]; cursor: number }>((state, sentence) => {
-      const normalized = sentence.trim();
-      if (!normalized) {
-        return state;
-      }
-      let start = text.indexOf(normalized, state.cursor);
-      if (start < 0) {
-        start = text.indexOf(normalized);
-      }
-      if (start < 0) {
-        start = state.cursor;
-      }
-      const end = start + normalized.length;
-      state.chunks.push({
-        text: sentence,
-        start,
-        end,
-      });
-      state.cursor = Math.max(end, state.cursor);
+    .filter((line) => {
+      const markerStripped = stripLeadingListMarker(line).trim();
+      return Boolean(markerStripped);
+    });
+
+  const sentences: SentenceCandidate[] = lineCandidates.flatMap((line): SentenceCandidate[] => {
+    if (isReferenceListLine(line)) {
+      return [{ text: stripLeadingListMarker(line).trim(), forceBlock: true, isReferenceLine: true }];
+    }
+
+    return line
+      .split(/(?<=[。！？!?\.])\s+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => ({ text: item }));
+  });
+
+  return sentences.reduce<{ chunks: SentenceChunk[]; cursor: number }>((state, sentence, index) => {
+    const normalized = sentence.text.trim();
+    if (!normalized) {
       return state;
-    }, { chunks: [], cursor: 0 }).chunks;
+    }
+    let start = text.indexOf(normalized, state.cursor);
+    if (start < 0) {
+      start = text.indexOf(normalized);
+    }
+    if (start < 0) {
+      start = state.cursor;
+    }
+    const end = start + normalized.length;
+    state.chunks.push({
+      text: `${sentence.text}${index < sentences.length - 1 && !sentence.forceBlock ? " " : ""}`,
+      start,
+      end,
+      forceBlock: sentence.forceBlock,
+      isReferenceLine: sentence.isReferenceLine,
+    });
+    state.cursor = Math.max(end, state.cursor);
+    return state;
+  }, { chunks: [], cursor: 0 }).chunks;
 }
 
-function findQuoteRange(blockText: string, selectedText: string) {
-  const raw = selectedText.trim();
-  if (!raw) {
-    return undefined;
-  }
-  const direct = blockText.indexOf(raw);
-  if (direct >= 0) {
-    return { start: direct, end: direct + raw.length };
+function getSelectionRangeInElement(element: HTMLElement, maxChars = 400): ElementSelectionRange | null {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
   }
 
-  const normalizeWithMap = (value: string) => {
-    const chars: string[] = [];
-    const map: number[] = [];
-    let lastWasSpace = false;
-    for (let index = 0; index < value.length; index += 1) {
-      const char = value[index];
-      if (/\s/.test(char)) {
-        if (!lastWasSpace) {
-          chars.push(" ");
-          map.push(index);
-          lastWasSpace = true;
-        }
-      } else {
-        chars.push(char);
-        map.push(index);
-        lastWasSpace = false;
-      }
+  const selectionRange = selection.getRangeAt(0);
+  if (selectionRange.collapsed) {
+    return null;
+  }
+  try {
+    if (!selectionRange.intersectsNode(element)) {
+      return null;
     }
-    return {
-      normalized: chars.join("").trim(),
-      map,
-    };
-  };
+  } catch {
+    return null;
+  }
 
-  const blockNormalized = normalizeWithMap(blockText);
-  const targetNormalized = normalizeWithMap(raw).normalized;
-  if (!targetNormalized) {
-    return undefined;
+  const elementRange = document.createRange();
+  elementRange.selectNodeContents(element);
+  const range = selectionRange.cloneRange();
+  if (range.compareBoundaryPoints(Range.START_TO_START, elementRange) < 0) {
+    range.setStart(elementRange.startContainer, elementRange.startOffset);
   }
-  const normalizedStart = blockNormalized.normalized.indexOf(targetNormalized);
-  if (normalizedStart < 0) {
-    return undefined;
+  if (range.compareBoundaryPoints(Range.END_TO_END, elementRange) > 0) {
+    range.setEnd(elementRange.endContainer, elementRange.endOffset);
   }
-  const normalizedEnd = normalizedStart + targetNormalized.length - 1;
-  const start = blockNormalized.map[normalizedStart];
-  const end = blockNormalized.map[normalizedEnd] + 1;
-  if (start === undefined || end === undefined || start >= end) {
-    return undefined;
+
+  const rawText = range.toString();
+  if (!rawText.trim()) {
+    return null;
   }
-  return { start, end };
+
+  const prefixRange = range.cloneRange();
+  prefixRange.selectNodeContents(element);
+  prefixRange.setEnd(range.startContainer, range.startOffset);
+
+  const rawStart = prefixRange.toString().length;
+  const leftTrim = rawText.length - rawText.trimStart().length;
+  const rightTrim = rawText.length - rawText.trimEnd().length;
+  const start = rawStart + leftTrim;
+  const end = rawStart + rawText.length - rightTrim;
+
+  if (end <= start) {
+    return null;
+  }
+
+  const normalizedText = rawText.trim();
+  const quoteText = normalizedText.length <= maxChars ? normalizedText : normalizedText.slice(0, maxChars);
+  const quoteEnd = quoteText.length < normalizedText.length ? start + quoteText.length : end;
+  return {
+    quoteText,
+    start,
+    end: quoteEnd,
+  };
+}
+
+function renderSentenceWithHighlights(text: string, ranges: StyledLocalTextRange[], keyPrefix: string) {
+  const normalizedRanges = ranges
+    .map((range) => ({
+      ...range,
+      start: Math.max(0, Math.min(text.length, range.start)),
+      end: Math.max(0, Math.min(text.length, range.end)),
+    }))
+    .filter((range) => range.end > range.start);
+
+  if (!normalizedRanges.length) {
+    return renderRichNodes(text, `${keyPrefix}-plain`);
+  }
+
+  const boundaries = new Set<number>([0, text.length]);
+  for (const range of normalizedRanges) {
+    boundaries.add(range.start);
+    boundaries.add(range.end);
+  }
+  const points = Array.from(boundaries).sort((left, right) => left - right);
+  const nodes: React.ReactNode[] = [];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (end <= start) {
+      continue;
+    }
+
+    const segment = text.slice(start, end);
+    const coveredKinds = new Set(
+      normalizedRanges
+        .filter((range) => range.start < end && range.end > start)
+        .map((range) => range.kind),
+    );
+
+    if (!coveredKinds.size) {
+      nodes.push(
+        <React.Fragment key={`${keyPrefix}-plain-${index}`}>
+          {renderRichNodes(segment, `${keyPrefix}-plain-${index}`)}
+        </React.Fragment>,
+      );
+      continue;
+    }
+
+    const highlightClass = coveredKinds.has("highlight")
+      ? "bg-teal-200/70"
+      : "bg-amber-200/80";
+    nodes.push(
+      <mark className={`rounded px-0.5 ${highlightClass}`} key={`${keyPrefix}-highlight-${index}`}>
+        {renderRichNodes(segment, `${keyPrefix}-highlight-${index}`)}
+      </mark>,
+    );
+  }
+
+  return nodes;
+}
+
+function buildSelectionKey(params: { blockId: string; quoteStart?: number; quoteEnd?: number; quoteText?: string }) {
+  const { blockId, quoteStart, quoteEnd, quoteText } = params;
+  if (quoteStart !== undefined && quoteEnd !== undefined) {
+    return `${blockId}:${quoteStart}:${quoteEnd}`;
+  }
+  return `${blockId}:text:${(quoteText ?? "").trim()}`;
 }
 
 function BlockCard({
   annotationThreads,
+  highlightItems,
   hiddenThreadIds,
   block,
   onAddAnnotation,
@@ -574,9 +731,12 @@ function BlockCard({
   onRestoreHiddenThreads,
   paperId,
   onOpenQuoteMenu,
+  onExplainFormula,
+  explainingFormulaBlockId,
   reserveCommentSpace,
 }: {
   annotationThreads?: AnnotationThread[];
+  highlightItems?: PaperHighlight[];
   block: PaperBlock;
   hiddenThreadIds: Set<string>;
   onAddAnnotation?: (params: {
@@ -599,6 +759,8 @@ function BlockCard({
     quoteStart?: number;
     quoteEnd?: number;
   }) => void;
+  onExplainFormula?: (block: FormulaPaperBlock) => void;
+  explainingFormulaBlockId?: string | null;
   reserveCommentSpace?: boolean;
 }) {
   const [replyThreadId, setReplyThreadId] = useState<string | null>(null);
@@ -618,28 +780,12 @@ function BlockCard({
     const threads = annotationThreads ?? [];
     const visibleThreads = threads.filter((thread) => !hiddenThreadIds.has(thread.threadId));
     const hasVisibleAnnotationThreads = visibleThreads.length > 0;
-    const shouldReserveCommentSpace = Boolean(reserveCommentSpace && hasVisibleAnnotationThreads);
+    const shouldReserveCommentSpace = Boolean(reserveCommentSpace);
 
     return (
       <article
+        id={`reader-block-${block.id}`}
         className={block.type === "heading" ? "pt-4" : ""}
-        onContextMenu={(event) => {
-          if (!onOpenQuoteMenu) {
-            return;
-          }
-          event.preventDefault();
-          const selection = window.getSelection();
-          const selectedText = selection?.toString().trim();
-          const quoteText = selectedText && selectedText.length <= 400 ? selectedText : undefined;
-          const quoteRange = quoteText ? findQuoteRange(block.english, quoteText) : undefined;
-          onOpenQuoteMenu(block, {
-            x: event.clientX,
-            y: event.clientY,
-            quoteText,
-            quoteStart: quoteRange?.start,
-            quoteEnd: quoteRange?.end,
-          });
-        }}
       >
         <div
           className={
@@ -650,33 +796,129 @@ function BlockCard({
         >
           <div className="min-w-0">
             {block.type === "heading" ? (
-              <RichText className={titleClass} text={block.english} />
+              <div
+                onContextMenu={(event) => {
+                  if (!onOpenQuoteMenu) {
+                    return;
+                  }
+                  const selected = getSelectionRangeInElement(event.currentTarget);
+                  if (!selected) {
+                    return;
+                  }
+                  event.preventDefault();
+                  onOpenQuoteMenu(block, {
+                    x: event.clientX,
+                    y: event.clientY,
+                    quoteText: selected.quoteText,
+                    quoteStart: selected.start,
+                    quoteEnd: selected.end,
+                  });
+                }}
+              >
+                <RichText className={titleClass} text={block.english} />
+              </div>
             ) : (
               <p className={`${titleClass} whitespace-pre-wrap`}>
                 {sentenceChunks.map((sentenceChunk, index) => {
                   const sentence = sentenceChunk.text;
-                  const normalizedSentence = normalizeComparableText(sentence);
-                  const relatedThreadIds = threads
-                    .filter((thread) => {
-                      if (thread.quoteStart !== undefined && thread.quoteEnd !== undefined) {
-                        return thread.quoteStart < sentenceChunk.end && thread.quoteEnd > sentenceChunk.start;
+                  const isReferenceLineSentence = Boolean(sentenceChunk.isReferenceLine);
+                  const displaySentence = isReferenceLineSentence
+                    ? stripLeadingListMarker(sentence).trim()
+                    : sentence;
+                  if (!displaySentence) {
+                    return null;
+                  }
+                  const localRanges: Array<LocalTextRange & { threadId: string }> = [];
+                  for (const thread of threads) {
+                    const hasValidRange =
+                      thread.quoteStart !== undefined &&
+                      thread.quoteEnd !== undefined &&
+                      thread.quoteStart >= 0 &&
+                      thread.quoteEnd > thread.quoteStart &&
+                      thread.quoteEnd <= block.english.length;
+
+                    if (hasValidRange) {
+                      const quoteStart = thread.quoteStart as number;
+                      const quoteEnd = thread.quoteEnd as number;
+                      const overlapStart = Math.max(quoteStart, sentenceChunk.start);
+                      const overlapEnd = Math.min(quoteEnd, sentenceChunk.end);
+                      if (overlapStart < overlapEnd) {
+                        localRanges.push({
+                          start: overlapStart - sentenceChunk.start,
+                          end: overlapEnd - sentenceChunk.start,
+                          threadId: thread.threadId,
+                        });
+                        continue;
                       }
-                      const quote = normalizeComparableText(thread.quoteText ?? "");
-                      if (!quote || !normalizedSentence) {
-                        return false;
+                    }
+                  }
+                  const highlightRanges: LocalTextRange[] = [];
+                  for (const highlight of highlightItems ?? []) {
+                    const hasValidRange =
+                      highlight.quoteStart !== undefined &&
+                      highlight.quoteEnd !== undefined &&
+                      highlight.quoteStart >= 0 &&
+                      highlight.quoteEnd > highlight.quoteStart &&
+                      highlight.quoteEnd <= block.english.length;
+
+                    if (hasValidRange) {
+                      const quoteStart = highlight.quoteStart as number;
+                      const quoteEnd = highlight.quoteEnd as number;
+                      const overlapStart = Math.max(quoteStart, sentenceChunk.start);
+                      const overlapEnd = Math.min(quoteEnd, sentenceChunk.end);
+                      if (overlapStart < overlapEnd) {
+                        highlightRanges.push({
+                          start: overlapStart - sentenceChunk.start,
+                          end: overlapEnd - sentenceChunk.start,
+                        });
+                        continue;
                       }
-                      return normalizedSentence.includes(quote) || quote.includes(normalizedSentence);
-                    })
-                    .map((thread) => thread.threadId);
+                    }
+                  }
+
+                  const relatedThreadIds = Array.from(new Set(localRanges.map((range) => range.threadId)));
                   const linkedToComment = relatedThreadIds.length > 0;
+                  const linkedToHighlight = highlightRanges.length > 0;
                   const hasHiddenRelated = relatedThreadIds.some((threadId) => hiddenThreadIds.has(threadId));
-                  const enumerated = isEnumeratedSentence(sentence);
+                  const enumerated = isEnumeratedSentence(sentence) || sentenceChunk.forceBlock;
+                  const spacingClass = isReferenceLineSentence
+                    ? "my-0.5 block"
+                    : enumerated
+                      ? "my-1 block"
+                      : "";
+                  const referenceLineClass = isReferenceLineSentence
+                    ? "text-[0.98rem] leading-7 text-slate-600"
+                    : "";
                   return (
                     <span
                       key={`${block.id}-sentence-${index}`}
                       className={`${
-                        linkedToComment ? "bg-amber-50/80 ring-1 ring-amber-200" : ""
-                      } ${enumerated ? "my-1 block" : ""} ${hasHiddenRelated ? "cursor-pointer" : ""}`}
+                        linkedToComment
+                          ? "bg-amber-50/80 ring-1 ring-amber-200"
+                          : linkedToHighlight
+                            ? "bg-teal-50/60 ring-1 ring-teal-200/80"
+                            : ""
+                      } ${spacingClass} ${referenceLineClass} ${hasHiddenRelated ? "cursor-pointer" : ""}`}
+                      onContextMenu={(event) => {
+                        if (!onOpenQuoteMenu) {
+                          return;
+                        }
+                        const selected = getSelectionRangeInElement(event.currentTarget);
+                        if (!selected) {
+                          return;
+                        }
+                        event.preventDefault();
+                        const displayOffset = Math.max(0, sentence.indexOf(displaySentence));
+                        const quoteStart = sentenceChunk.start + displayOffset + selected.start;
+                        const quoteEnd = sentenceChunk.start + displayOffset + selected.end;
+                        onOpenQuoteMenu(block, {
+                          x: event.clientX,
+                          y: event.clientY,
+                          quoteText: selected.quoteText,
+                          quoteStart,
+                          quoteEnd,
+                        });
+                      }}
                       onDoubleClick={() => {
                         if (!hasHiddenRelated || !onRestoreHiddenThreads) {
                           return;
@@ -684,7 +926,14 @@ function BlockCard({
                         onRestoreHiddenThreads(relatedThreadIds);
                       }}
                     >
-                      {renderRichNodes(sentence, `${block.id}-sentence-${index}`)}
+                      {renderSentenceWithHighlights(
+                        displaySentence,
+                        [
+                          ...localRanges.map((item) => ({ start: item.start, end: item.end, kind: "annotation" as const })),
+                          ...highlightRanges.map((item) => ({ start: item.start, end: item.end, kind: "highlight" as const })),
+                        ],
+                        `${block.id}-sentence-${index}`,
+                      )}
                     </span>
                   );
                 })}
@@ -822,18 +1071,37 @@ function BlockCard({
   }
 
   if (block.type === "formula") {
-    const plainExplanation = buildFormulaPlainExplanation(block.latex);
+    const explanation = block.formulaExplanation?.trim();
+    const isExplaining = explainingFormulaBlockId === block.id;
     return (
-      <article className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
-        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-600">
-          <Sigma size={16} />
-          <span>公式</span>
+      <article id={`reader-block-${block.id}`} className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
+        <div className="mb-2 flex items-center justify-between gap-2 text-sm font-medium text-slate-600">
+          <span className="inline-flex items-center gap-2">
+            <Sigma size={16} />
+            <span>公式</span>
+          </span>
+          {onExplainFormula ? (
+            explanation ? (
+              <button
+                type="button"
+                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isExplaining}
+                onClick={() => onExplainFormula(block)}
+              >
+                {isExplaining ? "生成中..." : "重新生成注释"}
+              </button>
+            ) : (
+              <span className="text-xs text-slate-500">{isExplaining ? "自动生成中..." : "等待自动生成注释..."}</span>
+            )
+          ) : null}
         </div>
         <FormulaView latex={block.latex} fallbackSrc={assetSrc} />
-        {plainExplanation ? (
+        {explanation ? (
           <p className="mt-3 rounded-lg border border-sky-100 bg-sky-50/60 px-3 py-2 text-[0.92rem] leading-7 text-slate-700">
-            {plainExplanation}
+            {explanation}
           </p>
+        ) : onExplainFormula ? (
+          <p className="mt-3 text-xs text-slate-500">系统会自动生成这条公式的中文注释。</p>
         ) : null}
       </article>
     );
@@ -841,7 +1109,7 @@ function BlockCard({
 
   if (block.type === "table") {
     return (
-      <article className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
+      <article id={`reader-block-${block.id}`} className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
         <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-600">
           <Table2 size={16} />
           <span>表格</span>
@@ -865,7 +1133,7 @@ function BlockCard({
   const imageBlock = block as AssetPaperBlock;
 
   return (
-    <article className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
+    <article id={`reader-block-${block.id}`} className="my-4 rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4">
       <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-600">
         <ImageIcon size={16} />
         <span>图片</span>
@@ -966,24 +1234,9 @@ function mergeReadableText(blocks: PaperBlock[]) {
   };
 
   const shouldMerge = (left: TextPaperBlock, right: TextPaperBlock) => {
-    if (left.type !== "text" || right.type !== "text") {
-      return false;
-    }
-    if (left.page !== right.page) {
-      return false;
-    }
-    const leftText = left.english.trim();
-    const rightText = right.english.trim();
-    if (!leftText || !rightText) {
-      return false;
-    }
-    if (rightText.startsWith("•") || rightText.startsWith("-")) {
-      return false;
-    }
-    if (/[。！？!?;；:]$/.test(leftText)) {
-      return false;
-    }
-    return true;
+    void left;
+    void right;
+    return false;
   };
 
   const joinText = (left: string, right: string) => {
@@ -1047,15 +1300,19 @@ export const PaperReader = ({
   paper,
   blocks,
   searchQuery,
-  quotedBlockIds,
+  quotedContextKeys,
   onAddAnnotation,
+  onAddHighlight,
+  onRemoveHighlight,
   onDeleteAnnotation,
+  onExplainFormula,
+  explainingFormulaBlockId,
   onQuoteBlock,
 }: {
   paper: PaperRecord;
   blocks: PaperBlock[];
   searchQuery: string;
-  quotedBlockIds?: string[];
+  quotedContextKeys?: string[];
   onAddAnnotation?: (params: {
     block: TextPaperBlock;
     content: string;
@@ -1064,15 +1321,95 @@ export const PaperReader = ({
     quoteEnd?: number;
     threadId?: string;
   }) => void;
+  onAddHighlight?: (params: {
+    block: TextPaperBlock;
+    quoteText?: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) => void;
+  onRemoveHighlight?: (params: {
+    highlightId?: string;
+    blockId: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
-  onQuoteBlock?: (block: TextPaperBlock) => void;
+  onExplainFormula?: (block: FormulaPaperBlock) => void;
+  explainingFormulaBlockId?: string | null;
+  onQuoteBlock?: (params: {
+    block: TextPaperBlock;
+    quoteText?: string;
+    quoteStart?: number;
+    quoteEnd?: number;
+  }) => void;
 }) => {
   const textBlocks = paper.blocks.filter(
     (block): block is TextPaperBlock => block.type === "text" || block.type === "heading",
   );
   const translatedCount = textBlocks.filter((block) => block.chinese?.trim()).length;
   const readingBlocks = useMemo(() => mergeReadableText(blocks), [blocks]);
-  const quotedSet = useMemo(() => new Set(quotedBlockIds ?? []), [quotedBlockIds]);
+  const tocItems = useMemo((): TocItem[] => {
+    const headingItems = readingBlocks
+      .filter((block): block is TextPaperBlock => block.type === "heading" && block.english.trim().length > 0)
+      .map((block) => ({
+        blockId: block.id,
+        title: block.english.trim(),
+        page: block.page,
+        level: inferHeadingLevel(block.english, block.headingLevel),
+      }));
+    if (!headingItems.length) {
+      return [];
+    }
+    const dedupedItems: TocItem[] = [];
+    for (const item of headingItems) {
+      const prev = dedupedItems[dedupedItems.length - 1];
+      if (!prev) {
+        dedupedItems.push(item);
+        continue;
+      }
+      const prevToken = extractHeadingNumberToken(prev.title);
+      const currentToken = extractHeadingNumberToken(item.title);
+      const sameNumberToken = Boolean(prevToken && currentToken && prevToken === currentToken);
+      const sameNormalizedTitle = normalizeHeadingForCompare(prev.title) === normalizeHeadingForCompare(item.title);
+      if ((sameNumberToken || sameNormalizedTitle) && Math.abs(prev.page - item.page) <= 1) {
+        continue;
+      }
+      dedupedItems.push(item);
+    }
+
+    const minLevel = Math.min(...dedupedItems.map((item) => item.level));
+    return dedupedItems.map((item) => ({
+      ...item,
+      level: Math.max(1, item.level - minLevel + 1),
+    }));
+  }, [readingBlocks]);
+  const tocTree = useMemo(() => {
+    const roots: TocNode[] = [];
+    const parentById = new Map<string, string | null>();
+    const stack: TocNode[] = [];
+
+    for (const item of tocItems) {
+      const node: TocNode = { ...item, children: [] };
+      while (stack.length > 0 && stack[stack.length - 1].level >= node.level) {
+        stack.pop();
+      }
+      const parent = stack[stack.length - 1];
+      if (parent) {
+        parent.children.push(node);
+        parentById.set(node.blockId, parent.blockId);
+      } else {
+        roots.push(node);
+        parentById.set(node.blockId, null);
+      }
+      stack.push(node);
+    }
+
+    return {
+      roots,
+      parentById,
+    };
+  }, [tocItems]);
+  const quotedSet = useMemo(() => new Set(quotedContextKeys ?? []), [quotedContextKeys]);
   const annotationThreadsByBlock = useMemo(() => {
     const threadMap = new Map<string, AnnotationThread>();
     for (const annotation of paper.annotations) {
@@ -1119,6 +1456,33 @@ export const PaperReader = ({
 
     return blockMap;
   }, [paper.annotations]);
+  const highlightsByBlock = useMemo(() => {
+    const blockMap = new Map<string, PaperHighlight[]>();
+    for (const highlight of paper.highlights) {
+      const list = blockMap.get(highlight.blockId) ?? [];
+      list.push(highlight);
+      blockMap.set(highlight.blockId, list);
+    }
+    for (const highlights of blockMap.values()) {
+      highlights.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    }
+    return blockMap;
+  }, [paper.highlights]);
+  const highlightIdBySelectionKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const highlight of paper.highlights) {
+      map.set(
+        buildSelectionKey({
+          blockId: highlight.blockId,
+          quoteStart: highlight.quoteStart,
+          quoteEnd: highlight.quoteEnd,
+          quoteText: highlight.quoteText,
+        }),
+        highlight.id,
+      );
+    }
+    return map;
+  }, [paper.highlights]);
   const [hiddenThreadIds, setHiddenThreadIds] = useState<string[]>([]);
   const hiddenThreadSet = useMemo(() => new Set(hiddenThreadIds), [hiddenThreadIds]);
   const hasAnyVisibleAnnotations = useMemo(
@@ -1127,6 +1491,8 @@ export const PaperReader = ({
   );
   const [contextMenu, setContextMenu] = useState<{
     block: TextPaperBlock;
+    selectionKey: string;
+    existingHighlightId?: string;
     x: number;
     y: number;
     quoteText?: string;
@@ -1142,6 +1508,11 @@ export const PaperReader = ({
     quoteEnd?: number;
     content: string;
   } | null>(null);
+  const hasContextMenuAnchor = Boolean(
+    contextMenu
+    && contextMenu.quoteStart !== undefined
+    && contextMenu.quoteEnd !== undefined,
+  );
   const visualBlocks = useMemo(
     () =>
       readingBlocks.filter(
@@ -1150,6 +1521,11 @@ export const PaperReader = ({
     [readingBlocks],
   );
   const [activeVisualId, setActiveVisualId] = useState<string | null>(null);
+  const [showOriginalPdf, setShowOriginalPdf] = useState(false);
+  const [showToc, setShowToc] = useState(false);
+  const [activeTocBlockId, setActiveTocBlockId] = useState<string | null>(null);
+  const [expandedTocIds, setExpandedTocIds] = useState<string[]>([]);
+  const expandedTocSet = useMemo(() => new Set(expandedTocIds), [expandedTocIds]);
   const activeVisualIndex = useMemo(
     () => visualBlocks.findIndex((block) => block.id === activeVisualId),
     [activeVisualId, visualBlocks],
@@ -1159,7 +1535,86 @@ export const PaperReader = ({
   useEffect(() => {
     setHiddenThreadIds([]);
     setActiveVisualId(null);
+    setShowOriginalPdf(false);
+    setShowToc(false);
+    setActiveTocBlockId(null);
+    setExpandedTocIds([]);
   }, [paper.id]);
+
+  const expandTocParents = (blockId: string) => {
+    setExpandedTocIds((current) => {
+      const next = new Set(current);
+      let parentId = tocTree.parentById.get(blockId) ?? null;
+      while (parentId) {
+        next.add(parentId);
+        parentId = tocTree.parentById.get(parentId) ?? null;
+      }
+      return Array.from(next);
+    });
+  };
+
+  const jumpToHeading = (blockId: string) => {
+    expandTocParents(blockId);
+    const target = document.getElementById(`reader-block-${blockId}`);
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+    setActiveTocBlockId(blockId);
+  };
+
+  const toggleTocNode = (blockId: string) => {
+    setExpandedTocIds((current) =>
+      current.includes(blockId) ? current.filter((id) => id !== blockId) : [...current, blockId],
+    );
+  };
+
+  const renderTocNodes = (nodes: TocNode[], depth = 0): React.ReactNode =>
+    nodes.map((node) => {
+      const hasChildren = node.children.length > 0;
+      const isExpanded = expandedTocSet.has(node.blockId);
+      const isActive = activeTocBlockId === node.blockId;
+      return (
+        <div key={node.blockId}>
+          <div
+            className={`flex items-center rounded-md py-1 pr-2 transition-colors ${
+              isActive ? "bg-teal-50 text-teal-700" : "text-slate-700 hover:bg-slate-50"
+            }`}
+            style={{ paddingLeft: `${8 + depth * 12}px` }}
+          >
+            {hasChildren ? (
+              <button
+                type="button"
+                className="mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-100"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleTocNode(node.blockId);
+                }}
+                aria-label={isExpanded ? "收起子目录" : "展开子目录"}
+              >
+                <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+              </button>
+            ) : (
+              <span className="mr-1 inline-flex h-5 w-5 shrink-0" />
+            )}
+
+            <button
+              type="button"
+              className="min-w-0 flex-1 text-left text-sm"
+              onClick={() => jumpToHeading(node.blockId)}
+            >
+              <span className="mr-2 text-xs text-slate-400">P{node.page}</span>
+              <span className="align-middle">{node.title}</span>
+            </button>
+          </div>
+
+          {hasChildren && isExpanded ? renderTocNodes(node.children, depth + 1) : null}
+        </div>
+      );
+    });
 
   useEffect(() => {
     const handleWindowClick = () => {
@@ -1195,69 +1650,143 @@ export const PaperReader = ({
   return (
     <div className="flex-1 overflow-y-auto bg-gradient-to-b from-[#f6f3ec] via-[#f6f4ef] to-[#f3f0e8] px-6 py-8">
       <div
-        className={`mx-auto rounded-3xl border border-[#e6dfd0] bg-[#fffdf8] shadow-[0_12px_28px_rgba(15,23,42,0.08)] ${
-          hasAnyVisibleAnnotations ? "max-w-[1220px]" : "max-w-[920px]"
+        className={`mx-auto flex items-start gap-5 ${
+          hasAnyVisibleAnnotations ? "max-w-[1540px]" : "max-w-[1240px]"
         }`}
       >
-        <div className="border-b border-[#e9e2d5] px-6 py-4">
-          <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
-            <div className="flex items-center gap-2">
-              <BookOpen size={16} />
-              <span>{paper.title}</span>
+        <div
+          className={`min-w-0 flex-1 rounded-3xl border border-[#e6dfd0] bg-[#fffdf8] shadow-[0_12px_28px_rgba(15,23,42,0.08)] ${
+            hasAnyVisibleAnnotations ? "max-w-[1220px]" : "max-w-[920px]"
+          }`}
+        >
+          <div className="border-b border-[#e9e2d5] px-6 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
+                <div className="flex items-center gap-2">
+                  <BookOpen size={16} />
+                  <span>{paper.title}</span>
+                </div>
+                <div>连续阅读模式</div>
+                <div>
+                  已翻译 {translatedCount}/{textBlocks.length} 块
+                </div>
+                <div className="text-xs text-slate-500">先选中文字再右键，可添加批注或划重点</div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  onClick={() => setShowToc((current) => !current)}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <List size={14} />
+                    {showToc ? "隐藏目录" : "显示目录"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  onClick={() => setShowOriginalPdf((current) => !current)}
+                >
+                  {showOriginalPdf ? "隐藏原始 PDF" : "显示原始 PDF"}
+                </button>
+              </div>
             </div>
-            <div>连续阅读模式</div>
-            <div>
-              已翻译 {translatedCount}/{textBlocks.length} 块
-            </div>
+
+            {showOriginalPdf ? (
+              <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <iframe
+                  className="h-[72vh] w-full"
+                  src={`/api/papers/${paper.id}/file#toolbar=1&navpanes=0`}
+                  title={`${paper.title} 原始 PDF`}
+                />
+              </div>
+            ) : null}
           </div>
+
+          {searchQuery ? (
+            <div className="mx-6 mt-5 rounded-2xl border border-teal-200 bg-teal-50 px-5 py-3 text-sm text-teal-800">
+              正在过滤关键词 “{searchQuery}”。
+            </div>
+          ) : null}
+
+          {readingBlocks.length ? (
+            <div className="space-y-5 px-8 pb-12 pt-6">
+              {readingBlocks.map((block) => (
+                <BlockCard
+                  block={block}
+                  key={block.id}
+                  onOpenQuoteMenu={(textBlock, position) => {
+                    const menuWidth = 236;
+                    const menuHeight = 168;
+                    const x = Math.min(window.innerWidth - menuWidth, Math.max(8, position.x));
+                    const y = Math.min(window.innerHeight - menuHeight, Math.max(8, position.y));
+                    const selectionKey = buildSelectionKey({
+                      blockId: textBlock.id,
+                      quoteStart: position.quoteStart,
+                      quoteEnd: position.quoteEnd,
+                      quoteText: position.quoteText,
+                    });
+                    const exactHighlightId = highlightIdBySelectionKey.get(selectionKey);
+                    const overlappingHighlightId = exactHighlightId ?? highlightsByBlock
+                      .get(textBlock.id)
+                      ?.find((item) =>
+                        item.quoteStart !== undefined
+                        && item.quoteEnd !== undefined
+                        && position.quoteStart !== undefined
+                        && position.quoteEnd !== undefined
+                        && item.quoteStart < position.quoteEnd
+                        && item.quoteEnd > position.quoteStart)
+                      ?.id;
+                    setContextMenu({
+                      block: textBlock,
+                      selectionKey,
+                      existingHighlightId: overlappingHighlightId,
+                      x,
+                      y,
+                      quoteText: position.quoteText,
+                      quoteStart: position.quoteStart,
+                      quoteEnd: position.quoteEnd,
+                    });
+                  }}
+                  annotationThreads={annotationThreadsByBlock.get(block.id)}
+                  highlightItems={highlightsByBlock.get(block.id)}
+                  hiddenThreadIds={hiddenThreadSet}
+                  onAddAnnotation={onAddAnnotation}
+                  onHideThread={(threadId) =>
+                    setHiddenThreadIds((current) => (current.includes(threadId) ? current : [...current, threadId]))
+                  }
+                  onOpenVisual={(visualBlock) => setActiveVisualId(visualBlock.id)}
+                  onRemoveAnnotation={onDeleteAnnotation}
+                  onExplainFormula={onExplainFormula}
+                  explainingFormulaBlockId={explainingFormulaBlockId}
+                  onRestoreHiddenThreads={(threadIds) =>
+                    setHiddenThreadIds((current) => current.filter((threadId) => !threadIds.includes(threadId)))}
+                  paperId={paper.id}
+                  reserveCommentSpace={hasAnyVisibleAnnotations}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="px-6 py-10 text-center text-sm text-slate-500">
+              没有可显示内容，请检查解析结果。
+            </div>
+          )}
         </div>
 
-        {searchQuery ? (
-          <div className="mx-6 mt-5 rounded-2xl border border-teal-200 bg-teal-50 px-5 py-3 text-sm text-teal-800">
-            正在过滤关键词 “{searchQuery}”。
-          </div>
+        {showToc ? (
+          <aside className="sticky top-6 hidden max-h-[calc(100vh-3rem)] w-[280px] shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:block">
+            <div className="border-b border-slate-100 px-4 py-2 text-xs font-semibold text-slate-600">论文目录导航</div>
+            <div className="max-h-[calc(100vh-7.2rem)] overflow-y-auto px-2 py-2">
+              {tocItems.length ? (
+                renderTocNodes(tocTree.roots)
+              ) : (
+                <div className="px-3 py-2 text-sm text-slate-500">当前解析结果里没有识别出目录标题。</div>
+              )}
+            </div>
+          </aside>
         ) : null}
-
-        {readingBlocks.length ? (
-          <div className="space-y-5 px-8 pb-12 pt-6">
-            {readingBlocks.map((block) => (
-              <BlockCard
-                block={block}
-                key={block.id}
-                onOpenQuoteMenu={(textBlock, position) => {
-                  const menuWidth = 236;
-                  const menuHeight = 120;
-                  const x = Math.min(window.innerWidth - menuWidth, Math.max(8, position.x));
-                  const y = Math.min(window.innerHeight - menuHeight, Math.max(8, position.y));
-                  setContextMenu({
-                    block: textBlock,
-                    x,
-                    y,
-                    quoteText: position.quoteText,
-                    quoteStart: position.quoteStart,
-                    quoteEnd: position.quoteEnd,
-                  });
-                }}
-                annotationThreads={annotationThreadsByBlock.get(block.id)}
-                hiddenThreadIds={hiddenThreadSet}
-                onAddAnnotation={onAddAnnotation}
-                onHideThread={(threadId) =>
-                  setHiddenThreadIds((current) => (current.includes(threadId) ? current : [...current, threadId]))
-                }
-                onOpenVisual={(visualBlock) => setActiveVisualId(visualBlock.id)}
-                onRemoveAnnotation={onDeleteAnnotation}
-                onRestoreHiddenThreads={(threadIds) =>
-                  setHiddenThreadIds((current) => current.filter((threadId) => !threadIds.includes(threadId)))}
-                paperId={paper.id}
-                reserveCommentSpace={hasAnyVisibleAnnotations}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="px-6 py-10 text-center text-sm text-slate-500">
-            没有可显示内容，请检查解析结果。
-          </div>
-        )}
       </div>
 
       {contextMenu ? (
@@ -1272,27 +1801,37 @@ export const PaperReader = ({
           <button
             type="button"
             className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-              quotedSet.has(contextMenu.block.id)
+              quotedSet.has(contextMenu.selectionKey)
                 ? "cursor-not-allowed text-slate-400"
                 : "text-slate-700 hover:bg-slate-100"
             }`}
-            disabled={quotedSet.has(contextMenu.block.id)}
+            disabled={quotedSet.has(contextMenu.selectionKey)}
             onClick={() => {
-              if (quotedSet.has(contextMenu.block.id) || !onQuoteBlock) {
+              if (quotedSet.has(contextMenu.selectionKey) || !onQuoteBlock) {
                 setContextMenu(null);
                 return;
               }
-              onQuoteBlock(contextMenu.block);
+              onQuoteBlock({
+                block: contextMenu.block,
+                quoteText: contextMenu.quoteText,
+                quoteStart: contextMenu.quoteStart,
+                quoteEnd: contextMenu.quoteEnd,
+              });
               setContextMenu(null);
             }}
           >
             <Quote size={14} />
-            {quotedSet.has(contextMenu.block.id) ? "已在聊天上下文中" : "添加到聊天上下文"}
+            {quotedSet.has(contextMenu.selectionKey) ? "已在聊天上下文中" : "添加到聊天上下文"}
           </button>
           <button
             type="button"
-            className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+            className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
+            disabled={!hasContextMenuAnchor}
             onClick={() => {
+              if (!hasContextMenuAnchor) {
+                setContextMenu(null);
+                return;
+              }
               setAnnotationComposer({
                 block: contextMenu.block,
                 x: contextMenu.x,
@@ -1307,6 +1846,46 @@ export const PaperReader = ({
           >
             <StickyNote size={14} />
             添加批注
+          </button>
+          <button
+            type="button"
+            className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
+            disabled={
+              (!onAddHighlight && !onRemoveHighlight)
+              || !hasContextMenuAnchor
+            }
+            onClick={() => {
+              const hasExisting = Boolean(contextMenu.existingHighlightId);
+              if (hasExisting) {
+                if (!onRemoveHighlight) {
+                  setContextMenu(null);
+                  return;
+                }
+                onRemoveHighlight({
+                  highlightId: contextMenu.existingHighlightId,
+                  blockId: contextMenu.block.id,
+                  quoteStart: contextMenu.quoteStart,
+                  quoteEnd: contextMenu.quoteEnd,
+                });
+                setContextMenu(null);
+                return;
+              }
+
+              if (!onAddHighlight) {
+                setContextMenu(null);
+                return;
+              }
+              onAddHighlight({
+                block: contextMenu.block,
+                quoteText: contextMenu.quoteText,
+                quoteStart: contextMenu.quoteStart,
+                quoteEnd: contextMenu.quoteEnd,
+              });
+              setContextMenu(null);
+            }}
+          >
+            <Highlighter size={14} />
+            {contextMenu.existingHighlightId ? "取消划重点" : "划重点"}
           </button>
         </div>
       ) : null}

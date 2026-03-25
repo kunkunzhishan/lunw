@@ -51,6 +51,14 @@
     text-wrap: pretty;
   }
 
+  .paper-reading-english::selection,
+  .paper-reading-english *::selection,
+  .paper-reading-chinese::selection,
+  .paper-reading-chinese *::selection {
+    background: rgba(20, 184, 166, 0.28);
+    color: inherit;
+  }
+
   .formula-readable .katex-display {
     margin: 0;
   }

@@ -11,10 +11,29 @@ interface Context {
 
 export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
-  const body = (await request.json()) as { question?: string; contextBlockIds?: string[] };
+  const body = (await request.json()) as {
+    question?: string;
+    contextBlockIds?: string[];
+    contextQuotes?: Array<{
+      blockId?: string;
+      quoteText?: string;
+      quoteStart?: number;
+      quoteEnd?: number;
+    }>;
+  };
   const question = body.question?.trim();
   const contextBlockIds = Array.isArray(body.contextBlockIds)
     ? body.contextBlockIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const contextQuotes = Array.isArray(body.contextQuotes)
+    ? body.contextQuotes
+      .map((item) => ({
+        blockId: typeof item.blockId === "string" ? item.blockId.trim() : "",
+        quoteText: typeof item.quoteText === "string" ? item.quoteText.trim() : "",
+        quoteStart: Number.isInteger(item.quoteStart) ? Number(item.quoteStart) : undefined,
+        quoteEnd: Number.isInteger(item.quoteEnd) ? Number(item.quoteEnd) : undefined,
+      }))
+      .filter((item) => item.blockId)
     : [];
 
   if (!question) {
@@ -27,7 +46,7 @@ export async function POST(request: Request, context: Context) {
   }
 
   try {
-    const answer = await answerPaperQuestion(paper, question, { contextBlockIds });
+    const answer = await answerPaperQuestion(paper, question, { contextBlockIds, contextQuotes });
     const createdAt = new Date().toISOString();
 
     const messages: ChatMessage[] = [

@@ -53,12 +53,30 @@ export async function POST(request: Request, context: Context) {
   if (!targetBlock) {
     return NextResponse.json({ error: "目标段落不存在。" }, { status: 404 });
   }
-  if (quoteStart !== undefined && quoteEnd !== undefined) {
-    if (targetBlock.type !== "text" && targetBlock.type !== "heading") {
-      return NextResponse.json({ error: "当前块类型不支持文本锚点。" }, { status: 400 });
+  let finalQuoteStart = quoteStart;
+  let finalQuoteEnd = quoteEnd;
+  let finalQuoteText = quoteText || undefined;
+  if (targetBlock.type !== "text" && targetBlock.type !== "heading") {
+    finalQuoteStart = undefined;
+    finalQuoteEnd = undefined;
+    finalQuoteText = quoteText || undefined;
+  } else {
+    const textLength = targetBlock.english.length;
+    const isRangeValid = quoteStart !== undefined
+      && quoteEnd !== undefined
+      && quoteStart < quoteEnd
+      && quoteStart >= 0
+      && quoteEnd <= textLength;
+    if (!isRangeValid) {
+      return NextResponse.json({ error: "请先精确选中要批注的文本。" }, { status: 400 });
     }
-    if (quoteEnd > targetBlock.english.length) {
-      return NextResponse.json({ error: "锚点超出段落范围。" }, { status: 400 });
+    finalQuoteStart = quoteStart;
+    finalQuoteEnd = quoteEnd;
+    finalQuoteText = targetBlock.english.slice(quoteStart, quoteEnd).trim() || quoteText || undefined;
+    if (!finalQuoteText) {
+      finalQuoteStart = undefined;
+      finalQuoteEnd = undefined;
+      return NextResponse.json({ error: "选区为空，请重新选择。" }, { status: 400 });
     }
   }
 
@@ -72,9 +90,9 @@ export async function POST(request: Request, context: Context) {
         id: nanoid(),
         blockId,
         threadId,
-        quoteText: quoteText || undefined,
-        quoteStart,
-        quoteEnd,
+        quoteText: finalQuoteText,
+        quoteStart: finalQuoteStart,
+        quoteEnd: finalQuoteEnd,
         content,
         createdAt: now,
         updatedAt: now,

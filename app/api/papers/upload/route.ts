@@ -73,6 +73,7 @@ export async function POST(request: Request) {
       blocks: extracted.blocks,
       assets: extracted.assets,
       annotations: [],
+      highlights: [],
       chatHistory: [],
       recommendations: [],
     };
@@ -94,6 +95,7 @@ export async function POST(request: Request) {
       blocks: [],
       assets: [],
       annotations: [],
+      highlights: [],
       chatHistory: [],
       recommendations: [],
       parseError:
