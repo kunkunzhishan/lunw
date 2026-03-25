@@ -1,6 +1,6 @@
 import { buildSourceRefsFromBlocks, extractTerms, searchBlocks } from "@/lib/paper-utils";
 import { readAppSettings } from "@/lib/settings";
-import type { PaperBlock, PaperRecord, PaperSummary, TextPaperBlock } from "@/lib/types";
+import type { FormulaPaperBlock, PaperBlock, PaperRecord, PaperSummary, TextPaperBlock } from "@/lib/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -319,7 +319,15 @@ export async function translateTextToChinese(text: string) {
 export async function answerPaperQuestion(
   paper: PaperRecord,
   question: string,
-  options: { contextBlockIds?: string[] } = {},
+  options: {
+    contextBlockIds?: string[];
+    contextQuotes?: Array<{
+      blockId: string;
+      quoteText?: string;
+      quoteStart?: number;
+      quoteEnd?: number;
+    }>;
+  } = {},
 ) {
   const textBlocks = paper.blocks.filter(
     (block): block is TextPaperBlock => block.type === "text" || block.type === "heading",
@@ -332,17 +340,49 @@ export async function answerPaperQuestion(
   const quotedBlocks = requestedIds.size
     ? textBlocks.filter((block) => requestedIds.has(block.id))
     : [];
-  const useQuotedOnly = quotedBlocks.length > 0;
-  const contextBlocks = useQuotedOnly ? quotedBlocks : textBlocks;
+  const contextQuotes = (options.contextQuotes ?? [])
+    .map((quote) => {
+      const block = textBlocks.find((item) => item.id === quote.blockId);
+      if (!block) {
+        return null;
+      }
+      const hasValidRange = quote.quoteStart !== undefined
+        && quote.quoteEnd !== undefined
+        && quote.quoteStart >= 0
+        && quote.quoteEnd > quote.quoteStart
+        && quote.quoteEnd <= block.english.length;
+      const snippet = hasValidRange
+        ? block.english.slice(quote.quoteStart as number, quote.quoteEnd as number).trim()
+        : (quote.quoteText ?? "").trim();
+      if (!snippet) {
+        return null;
+      }
+      return {
+        block,
+        snippet,
+      };
+    })
+    .filter((item): item is { block: TextPaperBlock; snippet: string } => Boolean(item));
+
+  const useQuotedOnly = contextQuotes.length > 0 || quotedBlocks.length > 0;
+  const contextBlocks = useQuotedOnly ? (quotedBlocks.length ? quotedBlocks : textBlocks) : textBlocks;
   const fallbackRefs = searchBlocks(question, paper.blocks);
   const refBlocks = useQuotedOnly
-    ? contextBlocks
+    ? (
+      contextQuotes.length
+        ? Array.from(new Map(contextQuotes.map((item) => [item.block.id, item.block])).values())
+        : contextBlocks
+    )
     : (fallbackRefs.length ? fallbackRefs : textBlocks.slice(0, 4));
   const refs = buildSourceRefsFromBlocks(refBlocks.slice(0, 4));
 
-  const contextText = contextBlocks
-    .map((block) => `[第 ${block.page} 页] ${block.english}`)
-    .join("\n\n");
+  const contextText = contextQuotes.length
+    ? contextQuotes
+      .map((item) => `[第 ${item.block.page} 页 · 选中片段] ${item.snippet}`)
+      .join("\n\n")
+    : contextBlocks
+      .map((block) => `[第 ${block.page} 页] ${block.english}`)
+      .join("\n\n");
   const MAX_CONTEXT_CHARS = 120_000;
   const clippedContextText = contextText.length > MAX_CONTEXT_CHARS
     ? `${contextText.slice(0, MAX_CONTEXT_CHARS)}\n\n[上下文过长，已截断]`
@@ -382,6 +422,10 @@ export async function generateObsidianNote(
   repositoryName: string,
   options?: { visualCandidates?: VisualCandidateForNote[] },
 ) {
+  const clipContext = (value: string, maxChars: number) => (
+    value.length > maxChars ? `${value.slice(0, maxChars)}\n[上下文过长，已截断]` : value
+  );
+
   const textBlocks = paper.blocks.filter(
     (block): block is TextPaperBlock => block.type === "text" || block.type === "heading",
   );
@@ -390,15 +434,46 @@ export async function generateObsidianNote(
     .map((block) => `[P${block.page}] ${block.english}`)
     .join("\n\n")
     .slice(0, 40000);
+  const formulaPreview = paper.blocks
+    .filter((block): block is FormulaPaperBlock => block.type === "formula")
+    .slice(0, 30)
+    .map((block) => `[P${block.page}] ${block.latex}`)
+    .join("\n\n")
+    .slice(0, 12000);
 
-  const annotationContext = paper.annotations
-    .slice(0, 80)
+  const annotationContextRaw = paper.annotations
     .map((annotation) => `- (${annotation.blockId}) ${annotation.quoteText ? `「${annotation.quoteText}」` : ""} ${annotation.content}`)
     .join("\n");
-  const chatContext = paper.chatHistory
-    .slice(-14)
+  const textByBlockId = new Map(textBlocks.map((block) => [block.id, block]));
+  const highlightContextRaw = paper.highlights
+    .map((highlight) => {
+      const block = textByBlockId.get(highlight.blockId);
+      if (!block) {
+        return "";
+      }
+      const snippet = highlight.quoteText?.trim()
+        || (
+          highlight.quoteStart !== undefined &&
+          highlight.quoteEnd !== undefined &&
+          highlight.quoteStart >= 0 &&
+          highlight.quoteEnd > highlight.quoteStart &&
+          highlight.quoteEnd <= block.english.length
+            ? block.english.slice(highlight.quoteStart, highlight.quoteEnd).trim()
+            : ""
+        );
+      if (!snippet) {
+        return "";
+      }
+      return `- [P${block.page}] 「${snippet}」`;
+    })
+    .filter(Boolean)
+    .join("\n");
+  const chatContextRaw = paper.chatHistory
     .map((message) => `- ${message.role === "user" ? "用户" : "助手"}: ${message.content}`)
     .join("\n");
+  const annotationContext = clipContext(annotationContextRaw, 16_000);
+  const highlightContext = clipContext(highlightContextRaw, 12_000);
+  const chatContext = clipContext(chatContextRaw, 16_000);
 
   const visualCandidates = (options?.visualCandidates ?? []).slice(0, 80);
   if (!visualCandidates.length) {
@@ -407,11 +482,11 @@ export async function generateObsidianNote(
         {
           role: "system",
           content:
-            "你是科研笔记助手。请输出一份可直接放入 Obsidian 的中文 Markdown 笔记，信息密度高，结构清晰，突出可行动结论。数学公式请使用 Obsidian 友好的定界符：行内用 $...$，独立公式用 $$...$$，不要使用 \\(...\\) 或 \\[...\\]。",
+            "你是科研笔记助手。只使用用户给定的论文上下文生成笔记，输出必须是中文 Markdown。数学公式请使用 Obsidian 友好的定界符：行内用 $...$，独立公式用 $$...$$，不要使用 \\(...\\) 或 \\[...\\]。",
         },
         {
           role: "user",
-          content: `请基于以下信息生成笔记。\n\n论文标题：${paper.title}\n仓库：${repositoryName}\n\n要求：\n1. 必须包含：一句话总结、问题与方法、关键证据、问答沉淀、批注要点、可执行下一步。\n2. 对于“问答沉淀”和“批注要点”，请做归纳，不要原样堆砌。\n3. 输出纯 Markdown，不要解释你在做什么。\n\n论文正文节选：\n${textPreview}\n\n问答记录：\n${chatContext || "暂无"}\n\n批注：\n${annotationContext || "暂无"}\n`,
+          content: `请基于以下信息生成笔记。\n\n论文标题：${paper.title}\n仓库：${repositoryName}\n\n你只能使用以下四类上下文，禁止引入其他来源：\n1. 论文正文（文本）\n2. 论文公式\n3. 论文批注\n4. 论文划重点与问答\n\n输出规则：\n1. 只输出中文 Markdown。\n2. 必须包含四个一级章节（标题保持一致）：\n   - 正文总结\n   - 批注记录\n   - 重点划线\n   - 问答摘录\n3. “正文总结”需要写清：一句话总结、研究问题与方法、关键证据、创新点、局限性、后续方向；允许引用公式（行内 $...$ / 独立 $$...$$）。\n4. “批注记录”必须保留批注原文与批注内容，尽量原封不动，不要改写语义；没有批注写“无批注”。\n5. “重点划线”可以适度概括，但要保持原意，且全部用中文；没有重点写“无重点”。\n6. “问答摘录”可以适度概括，但要把问题和回答要点说清楚，且全部用中文；没有问答写“无问答”。\n7. 不要输出“推荐阅读/相关阅读/外部链接”等额外章节。\n8. 输出纯 Markdown，不要解释你在做什么。\n\n论文正文节选：\n${textPreview}\n\n论文公式：\n${formulaPreview || "暂无"}\n\n重点划线：\n${highlightContext || "暂无"}\n\n问答记录：\n${chatContext || "暂无"}\n\n批注：\n${annotationContext || "暂无"}\n`,
         },
       ],
       0.3,
@@ -442,7 +517,7 @@ export async function generateObsidianNote(
       },
       {
         role: "user",
-        content: `请基于以下信息生成笔记。\n\n论文标题：${paper.title}\n仓库：${repositoryName}\n\n要求：\n1. markdown 必须包含：一句话总结、问题与方法、关键证据、问答沉淀、批注要点、可执行下一步。\n2. 对于“问答沉淀”和“批注要点”，请做归纳，不要原样堆砌。\n3. markdown 中数学公式请使用 Obsidian 友好的定界符：行内用 $...$，独立公式用 $$...$$。\n4. 只返回 JSON，不要额外解释。\n\n论文正文节选：\n${textPreview}\n\n问答记录：\n${chatContext || "暂无"}\n\n批注：\n${annotationContext || "暂无"}\n\n候选图表：\n${candidateText}\n`,
+        content: `请基于以下信息生成笔记。\n\n论文标题：${paper.title}\n仓库：${repositoryName}\n\n你只能使用以下四类上下文，禁止引入其他来源：\n1. 论文正文（文本）\n2. 论文公式\n3. 论文批注\n4. 论文划重点与问答\n\n要求：\n1. 输出中文 Markdown，并在 markdown 中必须包含以下四个一级章节（标题保持一致）：\n   - 正文总结\n   - 批注记录\n   - 重点划线\n   - 问答摘录\n2. “正文总结”需要写清：一句话总结、研究问题与方法、关键证据、创新点、局限性、后续方向；允许引用公式（行内 $...$ / 独立 $$...$$）。\n3. “批注记录”必须保留批注原文与批注内容，尽量原封不动，不要改写语义；没有批注写“无批注”。\n4. “重点划线”可以适度概括，但要保持原意，且全部用中文；没有重点写“无重点”。\n5. “问答摘录”可以适度概括，但要把问题和回答要点说清楚，且全部用中文；没有问答写“无问答”。\n6. 从候选图表里选最合适的图插入笔记（通过 V 编号），用于支撑正文总结，不要凭空造图。\n7. 不要输出“推荐阅读/相关阅读/外部链接”等额外章节。\n8. 只返回 JSON，不要额外解释。\n\n论文正文节选：\n${textPreview}\n\n论文公式：\n${formulaPreview || "暂无"}\n\n重点划线：\n${highlightContext || "暂无"}\n\n问答记录：\n${chatContext || "暂无"}\n\n批注：\n${annotationContext || "暂无"}\n\n候选图表：\n${candidateText}\n`,
       },
     ],
     0.3,
@@ -546,4 +621,38 @@ export async function explainFormulasForNote(params: {
   }
 
   return result;
+}
+
+export async function explainSingleFormula(params: {
+  paper: PaperRecord;
+  formulaBlock: FormulaPaperBlock;
+}) {
+  const latex = params.formulaBlock.latex?.trim();
+  if (!latex) {
+    throw new Error("该公式缺少可解释的 LaTeX 内容。");
+  }
+
+  const nearbyContext = params.paper.blocks
+    .filter((block): block is TextPaperBlock => block.type === "text" || block.type === "heading")
+    .sort((left, right) => Math.abs(left.order - params.formulaBlock.order) - Math.abs(right.order - params.formulaBlock.order))
+    .slice(0, 6)
+    .map((block) => `[P${block.page}] ${block.english}`)
+    .join("\n");
+
+  const explanation = await callChatCompletion(
+    [
+      {
+        role: "system",
+        content:
+          "你是论文公式注释助手。请给出高信息密度中文解释，避免空话。要求：1) 先说公式在当前语境中的作用；2) 解释 2-4 个关键符号；3) 给一句直觉理解。控制在 80-180 字，纯文本，不要 markdown，不要重复整段 LaTeX。",
+      },
+      {
+        role: "user",
+        content: `论文标题：${params.paper.title}\n\n公式所在页：P${params.formulaBlock.page}\n\n公式 LaTeX：\n${latex}\n\n邻近上下文：\n${nearbyContext || "无"}`,
+      },
+    ],
+    0.2,
+  );
+
+  return explanation.replace(/\s+/g, " ").trim();
 }

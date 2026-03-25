@@ -4,8 +4,7 @@ import path from "path";
 import { NextResponse } from "next/server";
 
 import { PAPER_ASSET_ROOT } from "@/lib/config";
-import { explainFormulasForNote, generateObsidianNote, translateTextToChinese } from "@/lib/llm";
-import { buildMarkdownNote } from "@/lib/paper-utils";
+import { generateObsidianNote } from "@/lib/llm";
 import { readAppSettings } from "@/lib/settings";
 import { getPaper, listRepositories, saveExport, writeMarkdownNote } from "@/lib/storage";
 import type { ExportedNote } from "@/lib/types";
@@ -18,32 +17,6 @@ function toSafeName(value: string, fallback: string) {
     .replace(/ /g, "_")
     .replace(/_+/g, "_");
   return normalized || fallback;
-}
-
-function normalizeObsidianMathDelimiters(markdown: string) {
-  return markdown
-    .replace(/\\\[\s*([\s\S]+?)\s*\\\]/g, (_full, expr: string) => `\n$$\n${expr.trim()}\n$$\n`)
-    .replace(/\\\(\s*([\s\S]+?)\s*\\\)/g, (_full, expr: string) => `$${expr.trim()}$`);
-}
-
-function normalizeFormulaLatex(raw: string | undefined) {
-  const text = (raw ?? "").trim();
-  if (!text) {
-    return "";
-  }
-  if (text.startsWith("$$") && text.endsWith("$$") && text.length > 4) {
-    return text.slice(2, -2).trim();
-  }
-  if (text.startsWith("\\[") && text.endsWith("\\]") && text.length > 4) {
-    return text.slice(2, -2).trim();
-  }
-  if (text.startsWith("\\(") && text.endsWith("\\)") && text.length > 4) {
-    return text.slice(2, -2).trim();
-  }
-  if (text.startsWith("$") && text.endsWith("$") && text.length > 2) {
-    return text.slice(1, -1).trim();
-  }
-  return text;
 }
 
 type PaperForExport = NonNullable<Awaited<ReturnType<typeof getPaper>>>;
@@ -150,123 +123,6 @@ function extractCaptionLabel(caption: string) {
     kind: /table/i.test(match[1]) ? "table" as const : "figure" as const,
     number: Number(match[2]),
   };
-}
-
-function extractMentionedEquationNumbers(markdown: string) {
-  const equationNumbers = new Set<number>();
-  for (const match of markdown.matchAll(/\b(?:equation|eq\.?)\s*[#(（]?\s*([0-9]{1,3})\s*[)）]?\b/gi)) {
-    const number = Number(match[1]);
-    if (Number.isFinite(number)) {
-      equationNumbers.add(number);
-    }
-  }
-  for (const match of markdown.matchAll(/公式\s*[#(（]?\s*([0-9]{1,3})\s*[)）]?/g)) {
-    const number = Number(match[1]);
-    if (Number.isFinite(number)) {
-      equationNumbers.add(number);
-    }
-  }
-  return equationNumbers;
-}
-
-function extractLatexKeywords(latex: string) {
-  const ignored = new Set(["left", "right", "text", "mathrm", "mathbf", "begin", "end", "cdot"]);
-  const keywords = new Set<string>();
-  for (const match of latex.matchAll(/\\([a-zA-Z]{2,20})/g)) {
-    const token = (match[1] ?? "").toLowerCase();
-    if (token && !ignored.has(token)) {
-      keywords.add(token);
-    }
-  }
-  return Array.from(keywords);
-}
-
-function extractFormulaVariables(latex: string) {
-  const cleaned = latex
-    .replace(/\\(mathrm|text|operatorname)\{([^}]*)\}/g, "$2")
-    .replace(/\\[a-zA-Z]+/g, " ")
-    .replace(/[{}^_]/g, " ");
-  const rawTokens = cleaned.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [];
-  const deduped = Array.from(
-    new Set(
-      rawTokens
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 1 && token.length <= 12),
-    ),
-  );
-  return deduped.slice(0, 4);
-}
-
-function buildFormulaPlainExplanation(latex: string) {
-  const normalized = latex.trim();
-  if (!normalized) {
-    return "";
-  }
-
-  const signals: string[] = [];
-  const hasArgmax = /\\argmax|argmax/i.test(normalized);
-  const hasArgmin = /\\argmin|argmin/i.test(normalized);
-  const hasEquality = /=/.test(normalized);
-  const hasInequality = /<=|>=|<|>|\\leq|\\geq/.test(normalized);
-  const hasArrow = /\\to|\\rightarrow|→/.test(normalized);
-  const hasSum = /\\sum/.test(normalized);
-  const hasIntegral = /\\int/.test(normalized);
-  const hasProduct = /\\prod/.test(normalized);
-  const hasFraction = /\\frac/.test(normalized);
-  const hasNorm = /\\lVert|\\rVert|\|\|/.test(normalized);
-  const hasProbability = /\\Pr|P\(|p\(/.test(normalized);
-  const hasLogExp = /\\log|\\ln|\\exp/.test(normalized);
-  const hasPower = /(?:\^\{[^}]+\}|\^[A-Za-z0-9])/.test(normalized);
-
-  if (hasArgmax) {
-    signals.push("在做最大化优化，目标是找到让目标函数最大的变量");
-  } else if (hasArgmin) {
-    signals.push("在做最小化优化，目标是找到让目标函数最小的变量");
-  } else if (hasEquality) {
-    signals.push("在定义或计算左侧变量，右侧是其组成或更新方式");
-  } else if (hasInequality) {
-    signals.push("在表达变量间的大小约束关系");
-  } else if (hasArrow) {
-    signals.push("在描述状态或变量的映射/更新过程");
-  } else {
-    signals.push("在描述多个变量之间的数学关系");
-  }
-
-  if (hasSum || hasIntegral || hasProduct) {
-    const items: string[] = [];
-    if (hasSum) {
-      items.push("求和");
-    }
-    if (hasIntegral) {
-      items.push("积分");
-    }
-    if (hasProduct) {
-      items.push("连乘");
-    }
-    signals.push(`包含${items.join(" / ")}，表示把多项信息聚合`);
-  }
-  if (hasFraction) {
-    signals.push("有分式结构，通常用于比例或归一化");
-  }
-  if (hasNorm) {
-    signals.push("含有范数项，通常用于度量距离或误差");
-  }
-  if (hasProbability) {
-    signals.push("出现概率表达，表示不确定性建模");
-  }
-  if (hasLogExp) {
-    signals.push("使用对数/指数变换，强调尺度变化");
-  }
-  if (hasPower) {
-    signals.push("包含幂次项，体现非线性关系");
-  }
-
-  const variables = extractFormulaVariables(normalized);
-  if (variables.length) {
-    signals.push(`关键变量：${variables.join("、")}`);
-  }
-
-  return signals.slice(0, 3).join("；");
 }
 
 function scoreVisualIntrinsic(caption: string, blockType: "image" | "table") {
@@ -461,83 +317,6 @@ function pickRelevantVisualBlocksFromGeneratedNote(
   return merged;
 }
 
-function pickRelevantFormulaSnippets(paper: PaperForExport, markdown: string) {
-  const mentionedPages = extractMentionedPages(markdown);
-  const mentionedEquationNumbers = extractMentionedEquationNumbers(markdown);
-  const noteLower = markdown.toLowerCase();
-  const noteCompact = noteLower.replace(/\s+/g, "");
-  const hasGenericFormulaMention = /(?:\bformula\b|\bequation\b|\beq\.?\b|公式)/i.test(markdown);
-
-  const formulas = paper.blocks
-    .filter((block): block is Extract<PaperForExport["blocks"][number], { type: "formula" }> => block.type === "formula")
-    .sort((left, right) => left.order - right.order)
-    .map((block, index) => ({
-      formulaNumber: index + 1,
-      page: block.page,
-      order: block.order,
-      latex: normalizeFormulaLatex(block.latex),
-    }))
-    .filter((item) => item.latex.length > 0 && item.latex.length <= 400);
-
-  const deduped: typeof formulas = [];
-  const seenLatex = new Set<string>();
-  for (const item of formulas) {
-    const key = item.latex.replace(/\s+/g, " ").trim();
-    if (seenLatex.has(key)) {
-      continue;
-    }
-    seenLatex.add(key);
-    deduped.push(item);
-  }
-
-  const scored = deduped
-    .map((item) => {
-      const compactLatex = item.latex.replace(/\s+/g, "").toLowerCase();
-      if (compactLatex && noteCompact.includes(compactLatex)) {
-        return { ...item, score: -1 };
-      }
-
-      let score = 0;
-      if (mentionedPages.has(item.page)) {
-        score += 2;
-      }
-      if (mentionedEquationNumbers.has(item.formulaNumber)) {
-        score += 4;
-      }
-
-      const keywords = extractLatexKeywords(item.latex);
-      let keywordHits = 0;
-      for (const keyword of keywords) {
-        if (noteLower.includes(keyword)) {
-          keywordHits += 1;
-        }
-      }
-      score += Math.min(2, keywordHits);
-
-      return { ...item, score };
-    })
-    .filter((item) => item.score >= 0);
-
-  const strictMatches = scored
-    .filter((item) => item.score >= 3)
-    .sort((left, right) => right.score - left.score || left.formulaNumber - right.formulaNumber);
-
-  if (strictMatches.length) {
-    return strictMatches.slice(0, 6);
-  }
-
-  if (hasGenericFormulaMention) {
-    const weakMatches = scored
-      .filter((item) => item.score > 0)
-      .sort((left, right) => right.score - left.score || left.formulaNumber - right.formulaNumber);
-    if (weakMatches.length) {
-      return weakMatches.slice(0, 2);
-    }
-  }
-
-  return [];
-}
-
 async function copyVisualAssetsToObsidian(params: {
   paper: NonNullable<Awaited<ReturnType<typeof getPaper>>>;
   obsidianRoot: string;
@@ -595,29 +374,6 @@ async function copyVisualAssetsToObsidian(params: {
   }
 
   return copied;
-}
-
-async function localizeVisualCaptions(visuals: Array<{
-  label: string;
-  page: number;
-  caption?: string;
-  obsidianLink: string;
-  mentionHints: string[];
-}>) {
-  return Promise.all(
-    visuals.map(async (item) => {
-      const caption = item.caption?.trim();
-      if (!caption) {
-        return { ...item, captionZh: undefined as string | undefined };
-      }
-      try {
-        const captionZh = await translateTextToChinese(caption);
-        return { ...item, captionZh: captionZh || caption };
-      } catch {
-        return { ...item, captionZh: caption };
-      }
-    }),
-  );
 }
 
 function pickInlineVisualAnchorLine(lines: string[], visual: {
@@ -721,67 +477,6 @@ function injectVisualsInline(markdown: string, visuals: Array<{
   return merged.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function appendFormulaSection(markdown: string, params: {
-  formulas: ReturnType<typeof pickRelevantFormulaSnippets>;
-  formulaExplanations?: Record<number, string>;
-}) {
-  const parts = [markdown.trim()];
-  const { formulas, formulaExplanations } = params;
-
-  if (formulas.length) {
-    const formulaLines = formulas
-      .map((item, index) => {
-        const plain = formulaExplanations?.[item.formulaNumber]?.trim() || buildFormulaPlainExplanation(item.latex);
-        return [
-          `### 公式 ${index + 1}（P${item.page}）`,
-          "$$",
-          item.latex,
-          "$$",
-          plain ? `> 白话：${plain}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n");
-      })
-      .join("\n\n");
-    parts.push(`## 公式速览（双版本：原式 + 白话）\n> 已转换为 Obsidian 友好的公式定界符。\n\n${formulaLines}`);
-  }
-
-  return normalizeObsidianMathDelimiters(parts.filter(Boolean).join("\n\n---\n\n"));
-}
-
-function buildFormulaContextSnippet(
-  paper: PaperForExport,
-  formula: { page: number; order: number },
-) {
-  const textBlocks = paper.blocks
-    .filter(
-      (block): block is Extract<PaperForExport["blocks"][number], { type: "text" | "heading" }> =>
-        block.type === "text" || block.type === "heading",
-    )
-    .map((block) => ({
-      page: block.page,
-      order: block.order,
-      text: block.english.replace(/\s+/g, " ").trim(),
-    }))
-    .filter((block) => block.text.length > 0);
-
-  const samePageNearby = textBlocks
-    .filter((block) => block.page === formula.page)
-    .sort((left, right) => Math.abs(left.order - formula.order) - Math.abs(right.order - formula.order))
-    .slice(0, 2);
-
-  if (samePageNearby.length) {
-    return samePageNearby.map((item) => item.text).join(" ").slice(0, 320);
-  }
-
-  return textBlocks
-    .sort((left, right) => Math.abs(left.order - formula.order) - Math.abs(right.order - formula.order))
-    .slice(0, 2)
-    .map((item) => item.text)
-    .join(" ")
-    .slice(0, 320);
-}
-
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as { paperId?: string; fileName?: string };
@@ -801,27 +496,21 @@ export async function POST(request: Request) {
     const baseFileName = toSafeName(body.fileName?.trim() || paper.title || paper.id, paper.id);
     const relativePath = path.join(repositoryDir, `${baseFileName}.md`);
 
-    let markdown = "";
-    let selectedVisualAssetIds: string[] = [];
-    try {
-      const generated = await generateObsidianNote(paper, repositoryName, {
-        visualCandidates: paper.blocks
-          .filter(
-            (block): block is Extract<PaperForExport["blocks"][number], { type: "image" | "table" }> =>
-              block.type === "image" || block.type === "table",
-          )
-          .map((block) => ({
-            assetId: block.assetId,
-            page: block.page,
-            type: block.type,
-            caption: (block.english ?? "").trim(),
-          })),
-      });
-      markdown = generated.markdown;
-      selectedVisualAssetIds = generated.selectedVisualAssetIds;
-    } catch {
-      markdown = buildMarkdownNote(paper);
-    }
+    const generated = await generateObsidianNote(paper, repositoryName, {
+      visualCandidates: paper.blocks
+        .filter(
+          (block): block is Extract<PaperForExport["blocks"][number], { type: "image" | "table" }> =>
+            block.type === "image" || block.type === "table",
+        )
+        .map((block) => ({
+          assetId: block.assetId,
+          page: block.page,
+          type: block.type,
+          caption: (block.english ?? "").trim(),
+        })),
+    });
+    const markdown = generated.markdown;
+    const selectedVisualAssetIds = generated.selectedVisualAssetIds;
 
     const settings = await readAppSettings();
     const obsidianRoot = settings.obsidianExportDir.trim();
@@ -837,30 +526,7 @@ export async function POST(request: Request) {
       baseFileName,
       visualBlocks,
     });
-    const localizedVisuals = await localizeVisualCaptions(copiedVisuals);
-    const markdownWithInlineVisuals = injectVisualsInline(markdown, localizedVisuals);
-    const formulas = pickRelevantFormulaSnippets(paper, markdown);
-    let formulaExplanations: Record<number, string> = {};
-    if (formulas.length) {
-      try {
-        formulaExplanations = await explainFormulasForNote({
-          paperTitle: paper.title,
-          noteMarkdown: markdownWithInlineVisuals,
-          formulas: formulas.map((formula) => ({
-            formulaNumber: formula.formulaNumber,
-            page: formula.page,
-            latex: formula.latex,
-            context: buildFormulaContextSnippet(paper, formula),
-          })),
-        });
-      } catch {
-        formulaExplanations = {};
-      }
-    }
-    const finalMarkdown = appendFormulaSection(markdownWithInlineVisuals, {
-      formulas,
-      formulaExplanations,
-    });
+    const finalMarkdown = injectVisualsInline(markdown, copiedVisuals).trim();
 
     const targetPath = await writeMarkdownNote(relativePath, finalMarkdown);
 

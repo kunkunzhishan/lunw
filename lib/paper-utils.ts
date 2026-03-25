@@ -76,32 +76,44 @@ export function buildMarkdownNote(paper: PaperRecord) {
   }
 
   const summary = paper.summary;
-  const recommendations = paper.recommendations.slice(0, 5);
-  const chats = paper.chatHistory.slice(-4);
   const annotations = paper.annotations.slice(0, 20);
-  const textHighlights = paper.blocks
-    .filter((block): block is TextPaperBlock => block.type === "text" || block.type === "heading")
-    .slice(0, 12)
-    .map((block) => `- [P${block.page}] ${block.english.slice(0, 220)}`);
+  const textByBlockId = new Map(
+    paper.blocks
+      .filter((block): block is TextPaperBlock => block.type === "text" || block.type === "heading")
+      .map((block) => [block.id, block]),
+  );
+  const rawAnnotationLines = annotations.map((item, index) => {
+    const block = textByBlockId.get(item.blockId);
+    const quote = item.quoteText?.trim()
+      || (
+        block &&
+        item.quoteStart !== undefined &&
+        item.quoteEnd !== undefined &&
+        item.quoteStart >= 0 &&
+        item.quoteEnd > item.quoteStart &&
+        item.quoteEnd <= block.english.length
+          ? block.english.slice(item.quoteStart, item.quoteEnd)
+          : ""
+      );
+    return [
+      `### 批注 ${index + 1}${block ? `（P${block.page}）` : ""}`,
+      "原文：",
+      `> ${quote || "（未捕获原文片段）"}`,
+      "批注：",
+      item.content || "（空批注）",
+    ].join("\n");
+  });
 
   return `# ${paper.title}
 
-## Metadata
-- Created: ${paper.createdAt}
-- Source: ${paper.source}
-- Authors: ${paper.authors.join(", ") || "Unknown"}
-- Status: ${paper.status}
-
-## 一句话总结
+## 正文摘要
 ${summary.oneLiner}
 
-## 研究问题
+## 研究问题与方法
 ${summary.researchProblem}
-
-## 核心方法
 ${summary.coreMethod}
 
-## 实验结论
+## 关键证据与实验结论
 ${summary.findings}
 
 ## 创新点
@@ -110,25 +122,10 @@ ${summary.innovations.map((item) => `- ${item}`).join("\n")}
 ## 局限性
 ${summary.limitations.map((item) => `- ${item}`).join("\n")}
 
-## 术语
-${summary.terms.map((item) => `- ${item}`).join("\n")}
-
-## 延伸想法
+## 后续方向
 ${summary.ideas.map((item) => `- ${item}`).join("\n")}
 
-## 推荐阅读
-${recommendations.map((item) => `- [${item.title}](${item.url}) - ${item.reason}`).join("\n") || "- 暂无"}
-
-## 问答摘录
-${chats.map((item) => `### ${item.role === "user" ? "我" : "助手"}\n${item.content}`).join("\n\n") || "暂无"}
-
-## 批注要点
-${annotations.map((item) => `- ${item.quoteText ? `「${item.quoteText}」` : ""} ${item.content}`).join("\n") || "暂无"}
-
-## 正文节选
-${textHighlights.join("\n") || "- 暂无"}
-
-## 我的想法
-- 
+## 批注原文与批注（原样）
+${rawAnnotationLines.join("\n\n") || "暂无"}
 `;
 }
